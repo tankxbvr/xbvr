@@ -7,6 +7,8 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/xbapps/xbvr/pkg/api"
 	"github.com/xbapps/xbvr/pkg/config"
+	"github.com/xbapps/xbvr/pkg/organize"
+	"github.com/xbapps/xbvr/pkg/recommend"
 	"github.com/xbapps/xbvr/pkg/session"
 	"github.com/xbapps/xbvr/pkg/tasks"
 )
@@ -18,6 +20,8 @@ var previewTask cron.EntryID
 var actorScrapeTask cron.EntryID
 var stashdbScrapeTask cron.EntryID
 var linkScenesTask cron.EntryID
+var recommendTask cron.EntryID
+var organizeTask cron.EntryID
 
 func SetupCron() {
 	cronInstance = cron.New()
@@ -48,6 +52,14 @@ func SetupCron() {
 		log.Println(fmt.Sprintf("Setup Link Scenes Task %v", formatCronSchedule(config.CronSchedule(config.Config.Cron.LinkScenesSchedule))))
 		linkScenesTask, _ = cronInstance.AddFunc(formatCronSchedule(config.CronSchedule(config.Config.Cron.LinkScenesSchedule)), linkScenesCron)
 	}
+	if config.Config.Cron.RecommendationSchedule.Enabled {
+		log.Println(fmt.Sprintf("Setup Recommendation Task %v", formatCronSchedule(config.CronSchedule(config.Config.Cron.RecommendationSchedule))))
+		recommendTask, _ = cronInstance.AddFunc(formatCronSchedule(config.CronSchedule(config.Config.Cron.RecommendationSchedule)), recommendCron)
+	}
+	if config.Config.Cron.OrganizeSchedule.Enabled {
+		log.Println(fmt.Sprintf("Setup Organize Task %v", formatCronSchedule(config.CronSchedule(config.Config.Cron.OrganizeSchedule))))
+		organizeTask, _ = cronInstance.AddFunc(formatCronSchedule(config.CronSchedule(config.Config.Cron.OrganizeSchedule)), organizeCron)
+	}
 	cronInstance.Start()
 
 	go tasks.CalculateCacheSizes()
@@ -69,6 +81,12 @@ func SetupCron() {
 	}
 	if config.Config.Cron.LinkScenesSchedule.RunAtStartDelay > 0 {
 		time.AfterFunc(time.Duration(config.Config.Cron.LinkScenesSchedule.RunAtStartDelay)*time.Minute, linkScenesCron)
+	}
+	if config.Config.Cron.RecommendationSchedule.RunAtStartDelay > 0 {
+		time.AfterFunc(time.Duration(config.Config.Cron.RecommendationSchedule.RunAtStartDelay)*time.Minute, recommendCron)
+	}
+	if config.Config.Cron.OrganizeSchedule.RunAtStartDelay > 0 {
+		time.AfterFunc(time.Duration(config.Config.Cron.OrganizeSchedule.RunAtStartDelay)*time.Minute, organizeCron)
 	}
 
 	log.Println(fmt.Sprintf("Next Rescrape Task at %v", cronInstance.Entry(rescrapTask).Next))
@@ -110,6 +128,32 @@ func linkScenesCron() {
 		tasks.MatchAlternateSources()
 	}
 	log.Println(fmt.Sprintf("Next Link Scenes Task at %v", cronInstance.Entry(rescrapTask).Next))
+}
+
+func recommendCron() {
+	if !session.HasActiveSession() {
+		recommend.Generate()
+	}
+	log.Println(fmt.Sprintf("Next Recommendation Task at %v", cronInstance.Entry(recommendTask).Next))
+}
+
+func organizeCron() {
+	// Scheduled runs are DRY-RUN only: compute + log the plan; the user applies from the UI.
+	if !session.HasActiveSession() {
+		c := config.Config.Organize
+		organize.Start(organize.Options{
+			DryRun:         true,
+			Dedup:          c.Dedup,
+			DeferDups:      c.DeferDups,
+			IncomingDir:    c.IncomingDir,
+			IncomingMinAge: c.IncomingMinAge,
+			TopFolder:      c.TopFolder,
+			CastGender:     c.CastGender,
+			SymlinkByActor: c.SymlinkByActor,
+			ActorFolder:    c.ActorFolder,
+		})
+	}
+	log.Println(fmt.Sprintf("Next Organize Task at %v", cronInstance.Entry(organizeTask).Next))
 }
 
 var previewGenerateInProgress = false

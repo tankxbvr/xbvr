@@ -10,6 +10,9 @@
             <!--            <b-menu-item :label="$t('Scheduled tasks')" :active="active==='tasks'" @click="setActive ('tasks')"/>-->
             <b-menu-item :label="$t('Cache')" :active="active==='cache'" @click="setActive('cache')"></b-menu-item>
             <b-menu-item :label="$t('Task Schedules')" :active="active==='schedules'" @click="setActive('schedules')"></b-menu-item>
+            <b-menu-item :label="$t('Recommendations')" :active="active==='recommendations'" @click="setActive('recommendations')"></b-menu-item>
+            <b-menu-item :label="$t('Organize files')" :active="active==='organize'" @click="setActive('organize')"></b-menu-item>
+            <b-menu-item :label="$t('Duplicate files')" :active="active==='duplicates'" @click="setActive('duplicates')"></b-menu-item>
           </b-menu-list>
           <b-menu-list :label="$t('Scene data')">
             <b-menu-item :label="$t('Scrapers')" :active="active==='data-scrapers'"
@@ -36,6 +39,9 @@
           <Cache v-show="active==='cache'"/>
           <Previews v-show="active==='previews'"/>
           <Schedules v-show="active==='schedules'"/>
+          <Recommendations v-show="active==='recommendations'"/>
+          <Organize v-show="active==='organize'"/>
+          <Duplicates v-show="active==='duplicates'"/>
           <SceneDataScrapers v-show="active==='data-scrapers'"/>
           <SceneCreate v-show="active==='create-scene'"/>
           <Funscripts v-show="active==='funscripts'"/>
@@ -63,12 +69,15 @@ import InterfaceDLNA from './sections/InterfaceDLNA.vue'
 import Cache from './sections/Cache.vue'
 import Previews from './sections/Previews.vue'
 import Schedules from './sections/Schedules.vue'
+import Recommendations from './sections/Recommendations.vue'
+import Organize from './sections/Organize.vue'
+import Duplicates from './sections/Duplicates.vue'
 import InterfaceDeoVR from './sections/InterfaceDeoVR.vue'
 import InterfaceAdvanced from './sections/InterfaceAdvanced.vue'
 import SceneMatchParams from './overlays/SceneMatchParams.vue'
 
 export default {
-  components: { Storage, SceneDataScrapers, SceneCreate, Funscripts, SceneDataImportExport, InterfaceWeb, InterfaceDLNA, InterfaceDeoVR, Cache, Previews, Schedules, InterfaceAdvanced,SceneMatchParams },
+  components: { Storage, SceneDataScrapers, SceneCreate, Funscripts, SceneDataImportExport, InterfaceWeb, InterfaceDLNA, InterfaceDeoVR, Cache, Previews, Schedules, Recommendations, Organize, Duplicates, InterfaceAdvanced,SceneMatchParams },
   data: function () {
     return {
       active: 'storage'

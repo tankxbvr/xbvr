@@ -17,6 +17,9 @@ import optionsFunscripts from './optionsFunscripts'
 import optionsVendor from './optionsVendor'
 import optionsAdvanced from './optionsAdvanced'
 import optionsSceneCreate from './optionsSceneCreate'
+import optionsRecommendations from './optionsRecommendations'
+import optionsOrganize from './optionsOrganize'
+import optionsDuplicates from './optionsDuplicates'
 
 Vue.use(Vuex)
 
@@ -38,5 +41,8 @@ export default new Vuex.Store({
     optionsVendor,
     optionsAdvanced,
     optionsSceneCreate,
+    optionsRecommendations,
+    optionsOrganize,
+    optionsDuplicates,
   }
 })
