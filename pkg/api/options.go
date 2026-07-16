@@ -186,13 +186,20 @@ type RequestSaveOptionsTaskSchedule struct {
 	LinkScenesHourEnd      int  `json:"linkScenesHourEnd"`
 	LinkScenesStartDelay   int  `json:"linkScenesStartDelay"`
 
-	OrganizeEnabled      bool `json:"organizeEnabled"`
-	OrganizeHourInterval int  `json:"organizeHourInterval"`
-	OrganizeUseRange     bool `json:"organizeUseRange"`
-	OrganizeMinuteStart  int  `json:"organizeMinuteStart"`
-	OrganizeHourStart    int  `json:"organizeHourStart"`
-	OrganizeHourEnd      int  `json:"organizeHourEnd"`
-	OrganizeStartDelay   int  `json:"organizeStartDelay"`
+	OrganizeEnabled            bool `json:"organizeEnabled"`
+	OrganizeHourInterval       int  `json:"organizeHourInterval"`
+	OrganizeUseRange           bool `json:"organizeUseRange"`
+	OrganizeMinuteStart        int  `json:"organizeMinuteStart"`
+	OrganizeHourStart          int  `json:"organizeHourStart"`
+	OrganizeHourEnd            int  `json:"organizeHourEnd"`
+	OrganizeStartDelay         int  `json:"organizeStartDelay"`
+	RecommendationEnabled      bool `json:"recommendationEnabled"`
+	RecommendationHourInterval int  `json:"recommendationHourInterval"`
+	RecommendationUseRange     bool `json:"recommendationUseRange"`
+	RecommendationMinuteStart  int  `json:"recommendationMinuteStart"`
+	RecommendationHourStart    int  `json:"recommendationHourStart"`
+	RecommendationHourEnd      int  `json:"recommendationHourEnd"`
+	RecommendationStartDelay   int  `json:"recommendationStartDelay"`
 }
 type RequestSaveSiteMatchParams struct {
 	SiteId      string                   `json:"site"`
@@ -1049,6 +1056,13 @@ func (i ConfigResource) saveOptionsTaskSchedule(req *restful.Request, resp *rest
 	config.Config.Cron.OrganizeSchedule.HourStart = r.OrganizeHourStart
 	config.Config.Cron.OrganizeSchedule.HourEnd = r.OrganizeHourEnd
 	config.Config.Cron.OrganizeSchedule.RunAtStartDelay = r.OrganizeStartDelay
+	config.Config.Cron.RecommendationSchedule.Enabled = r.RecommendationEnabled
+	config.Config.Cron.RecommendationSchedule.HourInterval = r.RecommendationHourInterval
+	config.Config.Cron.RecommendationSchedule.UseRange = r.RecommendationUseRange
+	config.Config.Cron.RecommendationSchedule.MinuteStart = r.RecommendationMinuteStart
+	config.Config.Cron.RecommendationSchedule.HourStart = r.RecommendationHourStart
+	config.Config.Cron.RecommendationSchedule.HourEnd = r.RecommendationHourEnd
+	config.Config.Cron.RecommendationSchedule.RunAtStartDelay = r.RecommendationStartDelay
 
 	config.SaveConfig()
 

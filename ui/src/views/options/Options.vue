@@ -12,6 +12,7 @@
             <b-menu-item :label="$t('Task Schedules')" :active="active==='schedules'" @click="setActive('schedules')"></b-menu-item>
             <b-menu-item :label="$t('Organize files')" :active="active==='organize'" @click="setActive('organize')"></b-menu-item>
             <b-menu-item :label="$t('Duplicate files')" :active="active==='duplicates'" @click="setActive('duplicates')"></b-menu-item>
+            <b-menu-item :label="$t('Recommendations')" :active="active==='recommendations'" @click="setActive('recommendations')"></b-menu-item>
           </b-menu-list>
           <b-menu-list :label="$t('Scene data')">
             <b-menu-item :label="$t('Scrapers')" :active="active==='data-scrapers'"
@@ -40,6 +41,7 @@
           <Schedules v-show="active==='schedules'"/>
           <Organize v-show="active==='organize'"/>
           <Duplicates v-show="active==='duplicates'"/>
+          <Recommendations v-show="active==='recommendations'"/>
           <SceneDataScrapers v-show="active==='data-scrapers'"/>
           <SceneCreate v-show="active==='create-scene'"/>
           <Funscripts v-show="active==='funscripts'"/>
@@ -69,12 +71,13 @@ import Previews from './sections/Previews.vue'
 import Schedules from './sections/Schedules.vue'
 import Organize from './sections/Organize.vue'
 import Duplicates from './sections/Duplicates.vue'
+import Recommendations from './sections/Recommendations.vue'
 import InterfaceDeoVR from './sections/InterfaceDeoVR.vue'
 import InterfaceAdvanced from './sections/InterfaceAdvanced.vue'
 import SceneMatchParams from './overlays/SceneMatchParams.vue'
 
 export default {
-  components: { Storage, SceneDataScrapers, SceneCreate, Funscripts, SceneDataImportExport, InterfaceWeb, InterfaceDLNA, InterfaceDeoVR, Cache, Previews, Schedules, Organize, Duplicates, InterfaceAdvanced,SceneMatchParams },
+  components: { Storage, SceneDataScrapers, SceneCreate, Funscripts, SceneDataImportExport, InterfaceWeb, InterfaceDLNA, InterfaceDeoVR, Cache, Previews, Schedules, Organize, Duplicates, Recommendations, InterfaceAdvanced,SceneMatchParams },
   data: function () {
     return {
       active: 'storage'

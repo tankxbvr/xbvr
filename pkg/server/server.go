@@ -97,6 +97,7 @@ func StartServer(version, commit, branch, date string) {
 	restful.Add(api.ExternalReference{}.WebService())
 	restful.Add(api.InconsistenciesResource{}.WebService())
 	restful.Add(api.OrganizeResource{}.WebService())
+	restful.Add(api.RecommendationResource{}.WebService())
 
 	restConfig := restfulspec.Config{
 		WebServices: restful.RegisteredWebServices(),
