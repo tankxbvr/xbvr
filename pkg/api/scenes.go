@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/jinzhu/gorm"
 	"github.com/mozillazg/go-slugify"
 
+	"github.com/xbapps/xbvr/pkg/matchrank"
 	"github.com/xbapps/xbvr/pkg/models"
 	"github.com/xbapps/xbvr/pkg/tasks"
 )
@@ -697,6 +699,25 @@ func (i SceneResource) searchSceneIndex(req *restful.Request, resp *restful.Resp
 
 		scene.Score = v.Score
 		scenes = append(scenes, scene)
+	}
+
+	// When matching a specific file, re-rank the candidates with the learned model so the
+	// best-fitting scene (by title/cast overlap, fuzzy title, and runtime proximity) rises
+	// to the top instead of relying on the text score alone.
+	if fileID := req.QueryParameter("fileId"); fileID != "" {
+		var f models.File
+		if db.Select("video_duration").Where("id = ?", fileID).First(&f).Error == nil {
+			qTokens := matchrank.QueryTokens(q)
+			for i := range scenes {
+				cast := make([]string, 0, len(scenes[i].Cast))
+				for _, a := range scenes[i].Cast {
+					cast = append(cast, a.Name)
+				}
+				scenes[i].Score = matchrank.Score(qTokens, scenes[i].Score, scenes[i].Title,
+					scenes[i].Site, scenes[i].Studio, cast, scenes[i].Duration, f.VideoDuration)
+			}
+			sort.SliceStable(scenes, func(a, b int) bool { return scenes[a].Score > scenes[b].Score })
+		}
 	}
 
 	resp.WriteHeaderAndEntity(http.StatusOK, ResponseGetScenes{Results: len(scenes), Scenes: scenes})
