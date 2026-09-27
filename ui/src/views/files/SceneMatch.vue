@@ -158,10 +158,10 @@
                 {{ props.row.scene.duration > 0 ? props.row.scene.duration + " min" : "" }}
               </b-table-column>
               <b-table-column field="match_confidence" :label="$t('Confidence')" v-slot="props">
-                <b-tooltip :label="props.row.reason" multilined :delay="300">
+                <div :title="props.row.reason" class="confidence">
                   <b-progress show-value :value="props.row.match_confidence * 100"
                               :type="props.row.match_confidence >= minConfidence ? 'is-success' : 'is-warning'"></b-progress>
-                </b-tooltip>
+                </div>
               </b-table-column>
               <b-table-column field="_actions" v-slot="props">
                 <div class="buttons are-small is-flex-wrap-nowrap">
@@ -177,7 +177,7 @@
       </section>
     </div>
 
-    <b-modal v-model="previewOpen" has-modal-card :can-cancel="['escape', 'outside', 'x']">
+    <b-modal v-model="previewOpen" has-modal-card :can-cancel="['outside', 'x']">
       <div class="modal-card draft-preview" v-if="preview">
         <header class="modal-card-head">
           <p class="modal-card-title">{{ preview.scene.title || $t('Untitled draft') }}</p>
@@ -646,6 +646,10 @@ h6 + small > .pathDetails {
 .drafts h6 small {
   font-weight: normal;
   font-size: small;
+}
+
+.confidence {
+  min-width: 90px;
 }
 
 .run-notes {

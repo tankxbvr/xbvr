@@ -120,9 +120,21 @@ type ScrapeResult struct {
 	Error   string             `json:"error,omitempty"`
 }
 
-// ScrapeURL turns one page into a draft scene. keepAny is set for pages the user chose, which
+// ScrapeURL turns one page into a saved draft scene. keepAny is set for pages the user chose, which
 // become drafts even when the LLM doubts they are scene pages; search results are filtered.
 func (s *Service) ScrapeURL(ctx context.Context, rawURL string, fileID uint, file *llmscrape.FileInfo, query string, keepAny bool) ScrapeResult {
+	res := s.scrapePage(ctx, rawURL, fileID, file, query, keepAny)
+	if res.Draft != nil {
+		if err := res.Draft.Save(); err != nil {
+			res.Draft = nil
+			res.Error = "saving draft: " + err.Error()
+		}
+	}
+	return res
+}
+
+// scrapePage builds a draft from a page without saving it.
+func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, file *llmscrape.FileInfo, query string, keepAny bool) ScrapeResult {
 	res := ScrapeResult{URL: rawURL}
 	if DomainBlocked(rawURL, s.settings.BlockedDomains) {
 		res.Skipped = "domain is blocked in the LLM scraper settings"
@@ -172,10 +184,6 @@ func (s *Service) ScrapeURL(ctx context.Context, rawURL string, fileID uint, fil
 		res.Error = err.Error()
 		return res
 	}
-	if err := draft.Save(); err != nil {
-		res.Error = "saving draft: " + err.Error()
-		return res
-	}
 	res.Draft = draft
 	return res
 }
@@ -220,13 +228,17 @@ func BuildScrapedScene(page *llmscrape.Page, ext *llmscrape.Extraction, file *ll
 	if scene.Title == "" {
 		scene.Title = page.Title
 	}
-	// Covers must stay nil rather than empty: the scene import reads Covers[0] whenever the
-	// slice is non-nil.
-	if ext.CoverImage >= 0 {
-		scene.Covers = []string{page.Images[ext.CoverImage].URL}
-	}
 	for _, i := range ext.GalleryImages {
 		scene.Gallery = append(scene.Gallery, page.Images[i].URL)
+	}
+	// Covers must stay nil rather than empty: the scene import reads Covers[0] whenever the
+	// slice is non-nil. Without a cover the best still stands in, rather than a blank scene.
+	switch {
+	case ext.CoverImage >= 0:
+		scene.Covers = []string{page.Images[ext.CoverImage].URL}
+	case len(scene.Gallery) > 0:
+		scene.Covers = []string{scene.Gallery[0]}
+		scene.Gallery = scene.Gallery[1:]
 	}
 	if ext.Trailer >= 0 {
 		scene.TrailerType = "url"
@@ -312,15 +324,84 @@ func (s *Service) SuggestForFile(ctx context.Context, fileID uint) (*SuggestResu
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			out.Results[i] = s.ScrapeURL(ctx, u, fileID, file, out.Query, false)
+			out.Results[i] = s.scrapePage(ctx, u, fileID, file, out.Query, false)
 		}(i, u)
 	}
 	wg.Wait()
+
+	collapseDuplicates(out.Results)
+	for i := range out.Results {
+		d := out.Results[i].Draft
+		if d == nil {
+			continue
+		}
+		if err := d.Save(); err != nil {
+			out.Results[i].Draft = nil
+			out.Results[i].Error = "saving draft: " + err.Error()
+			continue
+		}
+		if d.Status == models.DraftStatusDismissed {
+			out.Results[i].Draft = nil // recorded so the page is not read again, but not proposed
+		}
+	}
 
 	sort.SliceStable(out.Results, func(a, b int) bool {
 		return confidence(out.Results[a]) > confidence(out.Results[b])
 	})
 	return out, nil
+}
+
+// collapseDuplicates keeps one draft per scene when several pages describe it, the best by
+// confidence, then an official page, then having a cover, then the most stills. The others are
+// marked dismissed; they are still saved so the same pages are not read again.
+func collapseDuplicates(results []ScrapeResult) {
+	best := map[string]int{}
+	for i, r := range results {
+		key := sceneKey(r.Draft)
+		if key == "" {
+			continue
+		}
+		j, seen := best[key]
+		if !seen {
+			best[key] = i
+			continue
+		}
+		loser := i
+		if betterDraft(r.Draft, results[j].Draft) {
+			best[key], loser = i, j
+		}
+		results[loser].Draft.Status = models.DraftStatusDismissed
+		results[loser].Skipped = "same scene as " + results[best[key]].URL
+	}
+}
+
+var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+func sceneKey(d *models.DraftScene) string {
+	if d == nil {
+		return ""
+	}
+	sc, err := d.Scene()
+	if err != nil || strings.TrimSpace(sc.Title) == "" {
+		return ""
+	}
+	norm := func(s string) string { return nonAlnumRe.ReplaceAllString(strings.ToLower(s), "") }
+	return norm(sc.Site) + "|" + norm(sc.Title)
+}
+
+func betterDraft(a, b *models.DraftScene) bool {
+	if a.MatchConfidence != b.MatchConfidence {
+		return a.MatchConfidence > b.MatchConfidence
+	}
+	if (a.PageKind == llmscrape.KindOfficial) != (b.PageKind == llmscrape.KindOfficial) {
+		return a.PageKind == llmscrape.KindOfficial
+	}
+	sa, _ := a.Scene()
+	sb, _ := b.Scene()
+	if (len(sa.Covers) > 0) != (len(sb.Covers) > 0) {
+		return len(sa.Covers) > 0
+	}
+	return len(sa.Gallery) > len(sb.Gallery)
 }
 
 func confidence(r ScrapeResult) float64 {
