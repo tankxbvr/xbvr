@@ -1,0 +1,52 @@
+# Multi-stage build for the xbvr recommendation fork.
+# Stage 1 builds the Vue UI, stage 2 compiles the Go binary (CGO/sqlite) with the
+# UI embedded, stage 3 is a slim runtime. bookworm is used in both build and
+# runtime so the CGO binary's glibc matches.
+#
+#   docker build -f Dockerfile.build -t xbvr:recommend .
+
+### Stage 1 — build the Vue UI into ui/dist
+FROM node:18-bookworm AS ui
+WORKDIR /src
+ENV NODE_OPTIONS=--max-old-space-size=4096
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile --ignore-engines --network-timeout 600000
+COPY . .
+RUN yarn build
+
+### Stage 2 — build the Go binary with the embedded UI (CGO for go-sqlite3)
+FROM golang:1.25-bookworm AS build
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# ONNX Runtime (for visual embeddings) + a small pretrained MobileNetV2 model.
+RUN mkdir -p /opt/onnx \
+    && curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-1.26.0.tgz -o /tmp/ort.tgz \
+    && tar -C /tmp -xzf /tmp/ort.tgz \
+    && cp -L /tmp/onnxruntime-linux-x64-1.26.0/lib/libonnxruntime.so /opt/onnx/libonnxruntime.so \
+    && curl -fsSL https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-7.onnx -o /opt/onnx/mobilenet.onnx
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=ui /src/ui/dist ./ui/dist
+ARG VERSION=0.4.39.27
+RUN CGO_ENABLED=1 go build -tags=json1 \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /xbvr .
+
+### Stage 3 — runtime (drop-in for the official image)
+FROM debian:bookworm-slim
+# ffmpeg/ffprobe are required by xbvr (previews, heatmaps, scanning); install them
+# so it doesn't download static builds on first boot.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /xbvr /usr/bin/xbvr
+COPY --from=build /opt/onnx/libonnxruntime.so /usr/lib/libonnxruntime.so
+COPY --from=build /opt/onnx/mobilenet.onnx /usr/share/xbvr/mobilenet.onnx
+RUN ldconfig
+COPY xbvr_data/ /usr/bin/xbvr_data/
+COPY docker_start.sh /
+RUN chmod 777 /docker_start.sh
+EXPOSE 9998-9999
+VOLUME /root/.config/
+CMD ["/usr/bin/xbvr"]
