@@ -2486,6 +2486,20 @@ func Migrate(migrateTo string) {
 				return tx.Exec("UPDATE scenes SET star_rating_updated_at = updated_at WHERE star_rating > 0").Error
 			},
 		},
+		{
+			// 0088-0094 are claimed by other in-flight changes; starting here avoids renumbering
+			// if they land in a different order.
+			ID: "0095-llm-draft-scenes",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.AutoMigrate(models.DraftScene{}).Error
+			},
+		},
+		{
+			ID: "0096-file-match-context",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.AutoMigrate(models.FileMatchContext{}).Error
+			},
+		},
 	}
 
 	// Wrap migrations to automatically track progress

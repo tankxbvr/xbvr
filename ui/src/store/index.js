@@ -20,6 +20,7 @@ import optionsSceneCreate from './optionsSceneCreate'
 import optionsRecommendations from './optionsRecommendations'
 import optionsOrganize from './optionsOrganize'
 import optionsDuplicates from './optionsDuplicates'
+import optionsLLMScraper from './optionsLLMScraper'
 
 Vue.use(Vuex)
 
@@ -44,5 +45,6 @@ export default new Vuex.Store({
     optionsRecommendations,
     optionsOrganize,
     optionsDuplicates,
+    optionsLLMScraper,
   }
 })
