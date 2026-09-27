@@ -6,7 +6,7 @@
 #   docker build -f Dockerfile.build -t xbvr:recommend .
 
 ### Stage 1 — build the Vue UI into ui/dist
-FROM node:18-bookworm AS ui
+FROM node:24-bookworm AS ui
 WORKDIR /src
 ENV NODE_OPTIONS=--max-old-space-size=4096
 COPY package.json yarn.lock ./
@@ -15,7 +15,7 @@ COPY . .
 RUN yarn build
 
 ### Stage 2 — build the Go binary with the embedded UI (CGO for go-sqlite3)
-FROM golang:1.25-bookworm AS build
+FROM golang:1.26-bookworm AS build
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -29,7 +29,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /src/ui/dist ./ui/dist
-ARG VERSION=0.4.39.27
+ARG VERSION=0.4.40.1
 RUN CGO_ENABLED=1 go build -tags=json1 \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /xbvr .
