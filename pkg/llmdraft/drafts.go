@@ -112,13 +112,15 @@ func SaveDraft(id, fileID uint) (string, error) {
 	d.Status = models.DraftStatusSaved
 	d.SceneID = scene.SceneID
 	d.FileID = fileID
-	if err := db.Save(&d).Error; err != nil {
+	if err := models.RetryIfBusy(func() error { return db.Save(&d).Error }); err != nil {
 		return scene.SceneID, fmt.Errorf("scene created but updating the draft failed: %w", err)
 	}
 	if fileID != 0 {
-		db.Model(&models.DraftScene{}).
-			Where("file_id = ? AND status = ? AND id <> ?", fileID, models.DraftStatusDraft, d.ID).
-			Update("status", models.DraftStatusDismissed)
+		models.RetryIfBusy(func() error {
+			return db.Model(&models.DraftScene{}).
+				Where("file_id = ? AND status = ? AND id <> ?", fileID, models.DraftStatusDraft, d.ID).
+				Update("status", models.DraftStatusDismissed).Error
+		})
 	}
 	return scene.SceneID, nil
 }
@@ -128,12 +130,17 @@ func SaveDraft(id, fileID uint) (string, error) {
 func RejectDraft(id uint) error {
 	db, _ := models.GetDB()
 	defer db.Close()
-	res := db.Model(&models.DraftScene{}).Where("id = ? AND status <> ?", id, models.DraftStatusSaved).
-		Update("status", models.DraftStatusRejected)
-	if res.Error != nil {
+	var affected int64
+	err := models.RetryIfBusy(func() error {
+		res := db.Model(&models.DraftScene{}).Where("id = ? AND status <> ?", id, models.DraftStatusSaved).
+			Update("status", models.DraftStatusRejected)
+		affected = res.RowsAffected
 		return res.Error
+	})
+	if err != nil {
+		return err
 	}
-	if res.RowsAffected == 0 {
+	if affected == 0 {
 		return fmt.Errorf("draft %d not found or already saved", id)
 	}
 	return nil
