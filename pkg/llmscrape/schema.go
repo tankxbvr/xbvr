@@ -316,6 +316,29 @@ func ParseExtraction(raw json.RawMessage, page *Page) (*Extraction, error) {
 	return &e, nil
 }
 
+// ApplyDurationCheck caps the confidence of a page whose running time is far from the file's. Models
+// weigh a matching title and performer above a mismatched length, which makes trailers, PMVs and
+// compilations of a scene look like the scene itself. Both durations must be known.
+func ApplyDurationCheck(e *Extraction, file *FileInfo) {
+	if file == nil || file.DurationMinutes <= 0 || e.DurationMinutes <= 0 {
+		return
+	}
+	diff := e.DurationMinutes - file.DurationMinutes
+	if diff < 0 {
+		diff = -diff
+	}
+	tolerance := file.DurationMinutes * 15 / 100
+	if tolerance < 3 {
+		tolerance = 3
+	}
+	if diff <= tolerance || e.MatchConfidence <= 0.3 {
+		return
+	}
+	e.MatchConfidence = 0.3
+	e.Reason = strings.TrimSpace(fmt.Sprintf("%s Running time %d min does not match the file's %d min.",
+		e.Reason, e.DurationMinutes, file.DurationMinutes))
+}
+
 func cleanNames(in []string, max int) []string {
 	seen := map[string]bool{}
 	var out []string

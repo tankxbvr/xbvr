@@ -32,6 +32,10 @@ type Settings struct {
 	BlockedDomains    []string
 }
 
+// rejectBelow is the confidence under which a search result is judged to be a different scene
+// and not proposed at all. Pages the user chooses are always kept.
+const rejectBelow = 0.15
+
 // Service is the LLM scraper wired to XBVR's database.
 type Service struct {
 	llm      *llmscrape.Client
@@ -158,6 +162,7 @@ func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, fi
 		res.Error = err.Error()
 		return res
 	}
+	llmscrape.ApplyDurationCheck(ext, file)
 
 	if !keepAny {
 		switch {
@@ -166,6 +171,9 @@ func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, fi
 			return res
 		case s.settings.SkipDownloadSites && ext.PageKind == llmscrape.KindDownload:
 			res.Skipped = "download or piracy site"
+			return res
+		case ext.MatchConfidence < rejectBelow:
+			res.Skipped = fmt.Sprintf("a different scene (%.0f%%): %s", ext.MatchConfidence*100, ext.Reason)
 			return res
 		}
 	}

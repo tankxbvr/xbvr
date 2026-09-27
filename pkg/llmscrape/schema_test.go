@@ -155,3 +155,31 @@ func TestStripBoilerplate(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyDurationCheck(t *testing.T) {
+	file := &FileInfo{DurationMinutes: 41}
+	pmv := &Extraction{MatchConfidence: 0.9, DurationMinutes: 13, Reason: "Title matches."}
+	ApplyDurationCheck(pmv, file)
+	if pmv.MatchConfidence != 0.3 || !strings.Contains(pmv.Reason, "13 min does not match the file's 41 min") {
+		t.Errorf("a 13 min page against a 41 min file should be capped: %v %q", pmv.MatchConfidence, pmv.Reason)
+	}
+
+	close := &Extraction{MatchConfidence: 0.95, DurationMinutes: 40}
+	ApplyDurationCheck(close, file)
+	if close.MatchConfidence != 0.95 {
+		t.Errorf("40 vs 41 min is within tolerance, confidence changed to %v", close.MatchConfidence)
+	}
+
+	short := &Extraction{MatchConfidence: 0.9, DurationMinutes: 12}
+	ApplyDurationCheck(short, &FileInfo{DurationMinutes: 10})
+	if short.MatchConfidence != 0.9 {
+		t.Error("short files get a 3 minute floor on the tolerance")
+	}
+
+	unknown := &Extraction{MatchConfidence: 0.9, DurationMinutes: 0}
+	ApplyDurationCheck(unknown, file)
+	ApplyDurationCheck(pmv, nil)
+	if unknown.MatchConfidence != 0.9 {
+		t.Error("an unknown page duration must not change confidence")
+	}
+}
