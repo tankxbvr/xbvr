@@ -27,7 +27,18 @@ func MatchFileToScene(db *gorm.DB, fileID uint, sceneID string) error {
 	if err := json.Unmarshal([]byte(scene.FilenamesArr), &filenames); err != nil {
 		return fmt.Errorf("scene %q has unreadable filenames: %w", sceneID, err)
 	}
-	filenames = append(filenames, f.Filename)
+	// Assigning the same file twice, or saving a draft that already lists it, must not record the
+	// filename twice.
+	known := false
+	for _, n := range filenames {
+		if n == f.Filename {
+			known = true
+			break
+		}
+	}
+	if !known {
+		filenames = append(filenames, f.Filename)
+	}
 	if tmp, err := json.Marshal(filenames); err == nil {
 		scene.FilenamesArr = string(tmp)
 	}

@@ -7,6 +7,7 @@ package llmdraft
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -139,5 +140,28 @@ func TestBrandName(t *testing.T) {
 		if got := brandName(in); got != want {
 			t.Errorf("brandName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRetryIfBusy(t *testing.T) {
+	calls := 0
+	err := models.RetryIfBusy(func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("database is locked")
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Errorf("lock errors should be retried until success: err=%v calls=%d", err, calls)
+	}
+
+	calls = 0
+	err = models.RetryIfBusy(func() error {
+		calls++
+		return errors.New("UNIQUE constraint failed")
+	})
+	if err == nil || calls != 1 {
+		t.Errorf("other errors must not be retried: err=%v calls=%d", err, calls)
 	}
 }

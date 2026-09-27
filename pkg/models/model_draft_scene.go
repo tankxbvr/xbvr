@@ -2,7 +2,10 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
+
+	"github.com/avast/retry-go/v4"
 )
 
 // Draft scene statuses.
@@ -55,7 +58,23 @@ func (d *DraftScene) SetScene(s ScrapedScene) error {
 func (d *DraftScene) Save() error {
 	db, _ := GetDB()
 	defer db.Close()
-	return db.Save(d).Error
+	return RetryIfBusy(func() error { return db.Save(d).Error })
+}
+
+// RetryIfBusy retries fn while SQLite reports the database as locked, which happens while XBVR's
+// own scans and scrapes are writing. Unlike SaveWithRetry it returns the final error rather than
+// exiting, since a failed draft write should not stop the server.
+func RetryIfBusy(fn func() error) error {
+	return retry.Do(fn,
+		retry.Attempts(12),
+		retry.Delay(250*time.Millisecond),
+		retry.MaxDelay(3*time.Second),
+		retry.LastErrorOnly(true),
+		retry.RetryIf(func(err error) bool {
+			msg := strings.ToLower(err.Error())
+			return strings.Contains(msg, "database is locked") || strings.Contains(msg, "busy")
+		}),
+	)
 }
 
 // FileMatchContext holds per-file matching state. Context is free text the user attaches to a
@@ -90,7 +109,7 @@ func SetFileMatchContext(fileID uint, context string) error {
 	db.Where(&FileMatchContext{FileID: fileID}).FirstOrInit(&c)
 	c.FileID = fileID
 	c.Context = context
-	return db.Save(&c).Error
+	return RetryIfBusy(func() error { return db.Save(&c).Error })
 }
 
 // MarkFileSearched records that the LLM scraper searched the web for a file.
@@ -102,5 +121,5 @@ func MarkFileSearched(fileID uint) error {
 	now := time.Now()
 	c.FileID = fileID
 	c.LastSearchedAt = &now
-	return db.Save(&c).Error
+	return RetryIfBusy(func() error { return db.Save(&c).Error })
 }
