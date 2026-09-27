@@ -165,3 +165,42 @@ func TestRetryIfBusy(t *testing.T) {
 		t.Errorf("other errors must not be retried: err=%v calls=%d", err, calls)
 	}
 }
+
+func TestCoverFallsBackToFirstStill(t *testing.T) {
+	page := &llmscrape.Page{URL: "https://x/s", Images: []llmscrape.Candidate{{URL: "a"}, {URL: "b"}, {URL: "c"}}}
+	s := BuildScrapedScene(page, &llmscrape.Extraction{Site: "X", CoverImage: -1, GalleryImages: []int{2, 0}, Trailer: -1}, nil)
+	if len(s.Covers) != 1 || s.Covers[0] != "c" || len(s.Gallery) != 1 || s.Gallery[0] != "a" {
+		t.Errorf("covers %v gallery %v; the first still should become the cover", s.Covers, s.Gallery)
+	}
+}
+
+func draftFor(t *testing.T, site, title string, conf float64, kind string, covers []string) *models.DraftScene {
+	d := &models.DraftScene{MatchConfidence: conf, PageKind: kind, Status: models.DraftStatusDraft}
+	if err := d.SetScene(models.ScrapedScene{Site: site, Title: title, Covers: covers}); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func TestCollapseDuplicatesKeepsTheBest(t *testing.T) {
+	results := []ScrapeResult{
+		{URL: "u1", Draft: draftFor(t, "Ethernal VR", "Jedi Mind Tricks… of Pleasure", 1, llmscrape.KindStore, nil)},
+		{URL: "u2", Draft: draftFor(t, "Ethernal VR", "Jedi Mind Tricks... of Pleasure", 1, llmscrape.KindStore, []string{"cover"})},
+		{URL: "u3", Draft: draftFor(t, "ethernal vr", "JEDI MIND TRICKS OF PLEASURE", 0.9, llmscrape.KindOfficial, []string{"c"})},
+		{URL: "u4", Draft: draftFor(t, "Other", "Different Scene", 0.2, llmscrape.KindStore, nil)},
+		{URL: "u5", Skipped: "not a scene page"},
+	}
+	collapseDuplicates(results)
+
+	if results[1].Draft.Status != models.DraftStatusDraft {
+		t.Errorf("u2 (same confidence, has a cover) should be kept, status %q", results[1].Draft.Status)
+	}
+	for _, i := range []int{0, 2} {
+		if results[i].Draft.Status != models.DraftStatusDismissed || !strings.Contains(results[i].Skipped, "u2") {
+			t.Errorf("%s should be dismissed as a duplicate of u2: %q %q", results[i].URL, results[i].Draft.Status, results[i].Skipped)
+		}
+	}
+	if results[3].Draft.Status != models.DraftStatusDraft {
+		t.Error("a different scene must not be collapsed")
+	}
+}

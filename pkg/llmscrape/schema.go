@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Page kinds the LLM classifies a page as.
@@ -210,6 +211,50 @@ func BuildMessages(page *Page, file *FileInfo) []Message {
 
 var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
+var (
+	boilerplateRe = regexp.MustCompile(`(?i)(available (for|to) (online )?(stream|download|watch)|` +
+		`here on [a-z0-9-]+\.(com|net|org|xxx|tv)|vr porn (video|scene) featuring|` +
+		`in 4k-8k virtual reality|(watch|stream|download) (it |this )?(now |today |online )?(on|at) [a-z0-9-]+\.(com|net|org|xxx|tv)|` +
+		`(join|sign up) (now|today)|click here)`)
+)
+
+// splitSentences splits at . ! or ? followed by whitespace or the end, so the dot in a domain name
+// such as example.com does not end a sentence.
+func splitSentences(text string) []string {
+	var out []string
+	runes := []rune(text)
+	start := 0
+	for i, r := range runes {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		if i+1 < len(runes) && !unicode.IsSpace(runes[i+1]) {
+			continue
+		}
+		if s := strings.TrimSpace(string(runes[start : i+1])); s != "" {
+			out = append(out, s)
+		}
+		start = i + 1
+	}
+	if s := strings.TrimSpace(string(runes[start:])); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+// StripBoilerplate removes sentences that describe the website rather than the scene, which store
+// and tube pages put where a description would be. Models keep these despite being told not to.
+func StripBoilerplate(text string) string {
+	var kept []string
+	for _, sentence := range splitSentences(strings.TrimSpace(text)) {
+		if sentence == "" || boilerplateRe.MatchString(sentence) {
+			continue
+		}
+		kept = append(kept, sentence)
+	}
+	return strings.Join(kept, " ")
+}
+
 // ParseExtraction decodes the LLM's answer and repairs what the schema cannot guarantee: indexes
 // in range, sane durations and dates, no duplicate or blank names. Servers without constrained
 // decoding may return anything, so nothing is trusted.
@@ -223,7 +268,7 @@ func ParseExtraction(raw json.RawMessage, page *Page) (*Extraction, error) {
 	e.Studio = collapse(e.Studio)
 	e.Site = collapse(e.Site)
 	e.SiteSceneID = collapse(e.SiteSceneID)
-	e.Synopsis = strings.TrimSpace(e.Synopsis)
+	e.Synopsis = StripBoilerplate(e.Synopsis)
 	e.Reason = truncate(collapse(e.Reason), 300)
 
 	if !contains(pageKinds, e.PageKind) {

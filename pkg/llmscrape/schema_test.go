@@ -141,3 +141,17 @@ func TestFieldGuideReachesThePrompt(t *testing.T) {
 		t.Error("field guide should follow schema order")
 	}
 }
+
+func TestStripBoilerplate(t *testing.T) {
+	cases := map[string]string{
+		"Cleo Vega: Sweet Pink Bunny VR porn video featuring Cleo Vega from Ethernal VR. Currently available for online streaming and download in 4K-8K virtual reality here on VRPorn.com.": "",
+		"Lena is a gamer with a teasing spark. She bets you can't win. Watch it now on ExampleVR.com!":                                                                                       "Lena is a gamer with a teasing spark. She bets you can't win.",
+		"A quiet evening turns intense. Is she ready?": "A quiet evening turns intense. Is she ready?",
+		"": "",
+	}
+	for in, want := range cases {
+		if got := StripBoilerplate(in); got != want {
+			t.Errorf("StripBoilerplate(%q)\n got %q\nwant %q", in, got, want)
+		}
+	}
+}
