@@ -91,6 +91,30 @@
             </b-tooltip>
           </b-field>
           <b-button type="is-primary" @click="save">Save</b-button>
+
+          <h5 style="margin-top:2em">Learned download sites</h5>
+          <p>
+            Domains the model has classified as download or piracy sites. After {{ learnAfter }} such pages a
+            domain is skipped straight from search results, so it no longer uses up a page read. Allow one
+            if it was misjudged.
+          </p>
+          <b-table v-if="learned.length" :data="learned" narrowed>
+            <b-table-column field="domain" label="Domain" v-slot="props">
+              <a :href="props.row.example_url" target="_blank" rel="noreferrer">{{ props.row.domain }}</a>
+            </b-table-column>
+            <b-table-column field="count" label="Seen" numeric v-slot="props">{{ props.row.count }}</b-table-column>
+            <b-table-column field="blocked" label="Status" v-slot="props">
+              <b-tag v-if="props.row.allowed" type="is-success is-light">allowed</b-tag>
+              <b-tag v-else-if="props.row.blocked" type="is-danger is-light">skipped</b-tag>
+              <b-tag v-else type="is-light">seen once</b-tag>
+            </b-table-column>
+            <b-table-column v-slot="props">
+              <b-button size="is-small" @click="setAllowed(props.row.domain, !props.row.allowed)">
+                {{ props.row.allowed ? 'Skip again' : 'Allow' }}
+              </b-button>
+            </b-table-column>
+          </b-table>
+          <p v-else class="has-text-grey"><small>None yet.</small></p>
         </div>
       </div>
 
@@ -146,6 +170,8 @@ export default {
       testing: false,
       testResult: null,
       batch: { running: false, total: 0, done: 0, drafts_created: 0, errors: 0 },
+      learned: [],
+      learnAfter: 2,
       batchLimit: 0,
       batchForce: false,
       batchPoll: null
@@ -154,6 +180,7 @@ export default {
   mounted () {
     this.$store.dispatch('optionsLLMScraper/load')
     this.refreshBatch()
+    this.loadLearned()
   },
   beforeDestroy () {
     if (this.batchPoll) clearInterval(this.batchPoll)
@@ -208,6 +235,16 @@ export default {
         this.$buefy.toast.open({ message, type: 'is-danger', duration: 6000 })
       }
       this.refreshBatch()
+    },
+    async loadLearned () {
+      try {
+        this.learned = await ky.get('/api/llmscrape/learned-domains').json()
+      } catch (e) {
+        this.learned = []
+      }
+    },
+    async setAllowed (domain, allowed) {
+      this.learned = await ky.post('/api/llmscrape/learned-domains', { json: { domain, allowed } }).json()
     },
     async stopBatch () {
       await ky.post('/api/llmscrape/batch/stop')

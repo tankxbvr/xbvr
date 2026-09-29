@@ -128,7 +128,8 @@
             </b-field>
             <p v-if="suggesting" class="has-text-grey"><small>{{ $t('Searching and reading pages; this usually takes under a minute.') }}</small></p>
             <b-notification v-if="lastRunNotes.length" type="is-light" :closable="true" @close="lastRunNotes = []" class="run-notes">
-              <p v-if="lastQuery"><small>{{ $t('Searched for') }} <code>{{ lastQuery }}</code></small></p>
+              <p v-if="lastQuery"><small>{{ $t('Searched for') }} <code>{{ lastQuery }}</code>
+                <span v-if="lastKnownDownloadSites">&mdash; {{ lastKnownDownloadSites }} {{ $t('results from known download sites skipped') }}</span></small></p>
               <p v-for="(n, idx) in lastRunNotes" :key="idx"><small>
                 <a :href="n.url" target="_blank" rel="noreferrer">{{ shortUrl(n.url) }}</a>:
                 <span :class="n.error ? 'has-text-danger' : 'has-text-grey'">{{ n.error || n.skipped }}</span>
@@ -255,6 +256,7 @@ export default {
       scrapingUrl: false,
       scrapeUrl: '',
       lastQuery: '',
+      lastKnownDownloadSites: 0,
       lastRunNotes: [],
       previewOpen: false,
       preview: null,
@@ -379,8 +381,9 @@ export default {
         const r = await ky.post(`/api/llmscrape/suggest/${fileId}`, { searchParams: { refresh: true }, timeout: 600000 }).json()
         if (!this.stillOn(fileId)) return
         this.lastQuery = r.query
+        this.lastKnownDownloadSites = r.known_download_sites || 0
         this.lastRunNotes = (r.results || []).filter(x => !x.draft)
-        if (!(r.results || []).length) {
+        if (!(r.results || []).length && !this.lastKnownDownloadSites) {
           this.lastRunNotes = [{ url: '', skipped: this.$t('No new pages found. Try adding context, or paste a URL.') }]
         }
         await this.loadDrafts()

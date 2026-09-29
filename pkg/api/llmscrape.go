@@ -52,6 +52,11 @@ type RequestSaveDraft struct {
 	FileID uint `json:"file_id"`
 }
 
+type RequestLearnedDomain struct {
+	Domain  string `json:"domain"`
+	Allowed bool   `json:"allowed"`
+}
+
 type RequestLLMBatch struct {
 	Force bool `json:"force"`
 	Limit int  `json:"limit"`
@@ -76,6 +81,9 @@ func (i LLMScrapeResource) WebService() *restful.WebService {
 	ws.Route(ws.GET("/draft/{draft-id}").To(i.getDraft).Metadata(restfulspec.KeyOpenAPITags, tags))
 	ws.Route(ws.POST("/draft/{draft-id}/save").To(i.saveDraft).Metadata(restfulspec.KeyOpenAPITags, tags))
 	ws.Route(ws.DELETE("/draft/{draft-id}").To(i.rejectDraft).Metadata(restfulspec.KeyOpenAPITags, tags))
+
+	ws.Route(ws.GET("/learned-domains").To(i.learnedDomains).Metadata(restfulspec.KeyOpenAPITags, tags))
+	ws.Route(ws.POST("/learned-domains").To(i.setLearnedDomain).Metadata(restfulspec.KeyOpenAPITags, tags))
 
 	ws.Route(ws.POST("/batch/start").To(i.batchStart).Metadata(restfulspec.KeyOpenAPITags, tags))
 	ws.Route(ws.POST("/batch/stop").Consumes("*/*").To(i.batchStop).Metadata(restfulspec.KeyOpenAPITags, tags))
@@ -320,4 +328,21 @@ func (i LLMScrapeResource) batchStop(req *restful.Request, resp *restful.Respons
 
 func (i LLMScrapeResource) batchStatus(req *restful.Request, resp *restful.Response) {
 	resp.WriteHeaderAndEntity(http.StatusOK, llmdraft.Status())
+}
+
+func (i LLMScrapeResource) learnedDomains(req *restful.Request, resp *restful.Response) {
+	resp.WriteHeaderAndEntity(http.StatusOK, llmdraft.ListLearned())
+}
+
+func (i LLMScrapeResource) setLearnedDomain(req *restful.Request, resp *restful.Response) {
+	var r RequestLearnedDomain
+	if err := req.ReadEntity(&r); err != nil || r.Domain == "" {
+		resp.WriteHeaderAndEntity(http.StatusBadRequest, map[string]string{"error": "domain is required"})
+		return
+	}
+	if !llmdraft.SetLearnedAllowed(r.Domain, r.Allowed) {
+		resp.WriteHeaderAndEntity(http.StatusNotFound, map[string]string{"error": "not a learned domain"})
+		return
+	}
+	resp.WriteHeaderAndEntity(http.StatusOK, llmdraft.ListLearned())
 }
