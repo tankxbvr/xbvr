@@ -183,3 +183,41 @@ func TestApplyDurationCheck(t *testing.T) {
 		t.Error("an unknown page duration must not change confidence")
 	}
 }
+
+func TestApplyNameCheck(t *testing.T) {
+	cases := []struct {
+		name   string
+		file   *FileInfo
+		title  string
+		cast   []string
+		capped bool
+	}{
+		{"one shared word is not a match", &FileInfo{Filename: "creampie-me-please-pt2.mp4"},
+			"Cleo Gets a Massage With Creampie Included", []string{"Cleo Vega"}, true},
+		{"title in the filename", &FileInfo{Filename: "cleo-vega-sweet-pink-bunny.mp4"},
+			"Sweet Pink Bunny", []string{"Cleo Vega"}, false},
+		{"performers run together in the filename", &FileInfo{Filename: "FPVR-AliciaWilliams-DannySteele-180-POV_8K_UHD.mp4"},
+			"VR Sneak & Swap", []string{"Alicia Williams"}, false},
+		{"title only in the scene's own folder", &FileInfo{Filename: "vac-ddfnvr180109kqsdq-2160.mp4",
+			Folder: "DDFNetworkVR.18.01.09.Kira.Queen.Sugar.Daddy.for.the.Queen.XXX.VR180.2160p.MP4-VACCiNE", FolderIsScene: true},
+			"Sugar Daddy for the Queen", nil, false},
+		{"the same folder shared with other videos says nothing", &FileInfo{Filename: "vac-ddfnvr180109kqsdq-2160.mp4",
+			Folder: "DDFNetworkVR.18.01.09.Kira.Queen.Sugar.Daddy.for.the.Queen.XXX.VR180.2160p.MP4-VACCiNE"},
+			"Sugar Daddy for the Queen", nil, true},
+		{"user notes count", &FileInfo{Filename: "clip01.mp4", Context: "Lena from Slutty House"},
+			"Slutty House", nil, false},
+	}
+	for _, c := range cases {
+		e := &Extraction{MatchConfidence: 0.9, Title: c.title, Cast: c.cast}
+		ApplyNameCheck(e, c.file)
+		if capped := e.MatchConfidence == 0.4; capped != c.capped {
+			t.Errorf("%s: confidence %.2f, capped=%v want %v (%s)", c.name, e.MatchConfidence, capped, c.capped, e.Reason)
+		}
+	}
+
+	nothing := &Extraction{MatchConfidence: 0.9, Title: "Anything"}
+	ApplyNameCheck(nothing, &FileInfo{Filename: "vr4_2x.mp4"})
+	if nothing.MatchConfidence != 0.9 {
+		t.Error("with no words to compare, confidence must be left alone")
+	}
+}

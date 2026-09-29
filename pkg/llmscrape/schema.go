@@ -124,6 +124,18 @@ type FileInfo struct {
 	Filename        string
 	DurationMinutes int
 	Context         string // the user's saved notes for this file
+	Folder          string // name of the folder holding the file
+	// FolderIsScene is set when the folder holds only this video, so its name describes this
+	// scene rather than being a shared bucket such as "Incoming".
+	FolderIsScene bool
+}
+
+// FolderTerms returns search terms from the folder name when the folder is the scene's own.
+func (f *FileInfo) FolderTerms() string {
+	if f == nil || !f.FolderIsScene {
+		return ""
+	}
+	return CleanTerms(f.Folder)
 }
 
 const systemPrompt = `You identify adult VR video scenes from web pages for a personal media library.
@@ -135,7 +147,12 @@ Rules:
 - A page can describe the right scene without being a scene page (for example a performer page
   listing it); in that case is_scene_page is false.
 - Judge match_confidence against the file: studio, performers and title words should agree, and
-  a known file duration should be close to the page's running time.`
+  a known file duration should be close to the page's running time.
+- Filenames often abbreviate the studio: FPVR is FuckPassVR, DRVR is DarkRoomVR, SLR is
+  SexLikeReal, VRB is VRBangers. A page from a different studio than the file names describes a
+  different scene, however similar the title.
+- Sharing one word or one performer with the file is not a match. Most title words, or the
+  performers together with the studio, must agree.`
 
 // FieldGuide renders the schema's field descriptions as prompt text. Constrained decoding
 // enforces the schema's structure but does not show it to the model, so without this the
@@ -164,6 +181,13 @@ func BuildMessages(page *Page, file *FileInfo) []Message {
 		fmt.Fprintf(&b, "filename: %s\n", file.Filename)
 		if file.DurationMinutes > 0 {
 			fmt.Fprintf(&b, "file duration: %d minutes\n", file.DurationMinutes)
+		}
+		if file.Folder != "" {
+			if file.FolderIsScene {
+				fmt.Fprintf(&b, "folder: %s (holds only this video, so it likely names the scene)\n", file.Folder)
+			} else {
+				fmt.Fprintf(&b, "folder: %s (shared with other videos)\n", file.Folder)
+			}
 		}
 		if strings.TrimSpace(file.Context) != "" {
 			fmt.Fprintf(&b, "notes from the library owner: %s\n", strings.TrimSpace(file.Context))
@@ -337,6 +361,76 @@ func ApplyDurationCheck(e *Extraction, file *FileInfo) {
 	e.MatchConfidence = 0.3
 	e.Reason = strings.TrimSpace(fmt.Sprintf("%s Running time %d min does not match the file's %d min.",
 		e.Reason, e.DurationMinutes, file.DurationMinutes))
+}
+
+var (
+	camelLowerUpperRe = regexp.MustCompile(`([a-z])([A-Z])`)
+	camelAcronymRe    = regexp.MustCompile(`([A-Z]+)([A-Z][a-z])`)
+	wordSplitRe       = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+	stopWords         = map[string]bool{}
+)
+
+func init() {
+	for _, w := range strings.Fields(`a an the and of for with in on to is it its my your me i this that at by
+		from be are was you her his she he we our so pt part vr xxx not all get gets got`) {
+		stopWords[w] = true
+	}
+}
+
+// nameTokens lowercases and splits text into the words worth comparing, splitting run-together
+// CamelCase such as "AliciaWilliams" or "DDFNetworkVR".
+func nameTokens(text string) []string {
+	text = camelAcronymRe.ReplaceAllString(camelLowerUpperRe.ReplaceAllString(text, "$1 $2"), "$1 $2")
+	var out []string
+	for _, w := range wordSplitRe.Split(strings.ToLower(text), -1) {
+		// Words with digits are codes, part numbers and extensions, never titles or names.
+		if len(w) < 3 || stopWords[w] || strings.ContainsAny(w, "0123456789") {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// ApplyNameCheck caps the confidence of a page whose title and performers do not appear in what
+// is known about the file: its name, its folder when that is the scene's own, and the user's
+// notes. Models otherwise rate a page highly for sharing a single word or performer.
+func ApplyNameCheck(e *Extraction, file *FileInfo) {
+	if file == nil || e.MatchConfidence <= 0.4 {
+		return
+	}
+	known := map[string]bool{}
+	for _, w := range nameTokens(CleanTerms(file.Filename) + " " + file.FolderTerms() + " " + file.Context) {
+		known[w] = true
+	}
+	if len(known) == 0 {
+		return // nothing to compare against, e.g. a file named "vr4_2x.mp4"
+	}
+
+	titleAgrees := false
+	if title := nameTokens(e.Title); len(title) > 0 {
+		hits := 0
+		for _, w := range title {
+			if known[w] {
+				hits++
+			}
+		}
+		titleAgrees = float64(hits)/float64(len(title)) >= 0.6
+	}
+	castAgrees := false
+	for _, name := range e.Cast {
+		parts := nameTokens(name)
+		all := len(parts) > 0
+		for _, w := range parts {
+			all = all && known[w]
+		}
+		castAgrees = castAgrees || all
+	}
+	if titleAgrees || castAgrees {
+		return
+	}
+	e.MatchConfidence = 0.4
+	e.Reason = strings.TrimSpace(e.Reason + " Neither the title nor the performers appear in the file's name, folder or notes.")
 }
 
 func cleanNames(in []string, max int) []string {

@@ -72,31 +72,52 @@ func TestBraveSearchNeedsKey(t *testing.T) {
 	}
 }
 
-func TestFilenameTerms(t *testing.T) {
+func TestCleanTerms(t *testing.T) {
 	cases := map[string]string{
 		"Dezyred_Adriana Chechik_Slutty House_Fantasy-Fucked_4096p_8K_LR_180.mp4": "Dezyred Adriana Chechik Slutty House Fantasy Fucked",
 		"drvr-katrina lunk-welcome-home-sir-7k_180_LR.mp4":                        "drvr katrina lunk welcome home sir",
-		"VirtualRealPorn_Chloe Lapiedra_My_brothers_home_8K_180x180_3dh.mp4":      "VirtualRealPorn Chloe Lapiedra My brothers home",
-		"RealJamVR-Five-Stars-For-A-Rookie-Full_4096_60_LR_180.mp4":               "RealJamVR Five Stars For A Rookie Full 4096 60",
-		"FPVR-AliciaWilliams-DannySteele-180-POV_8K_UHD.mp4":                      "FPVR AliciaWilliams DannySteele POV",
+		"FPVR-AliciaWilliams-DannySteele-180-POV_8K_UHD.mp4":                      "FPVR Alicia Williams Danny Steele POV",
+		"Dezyred_Pussy_Master_4096p_8K_LR_180.mp4.mp4":                            "Dezyred Pussy Master",
+		"SLR_ThroattleVR_Fucking My Pornstar Girlfriend_4096p_84265_LR.mp4":       "SLR ThroattleVR Fucking My Pornstar Girlfriend",
+		"vac-ddfnvr180109kqsdq-2160.mp4":                                          "vac 2160",
+		// folder names
+		"DDFNetworkVR.18.01.09.Kira.Queen.Sugar.Daddy.for.the.Queen.XXX.VR180.2160p.MP4-VACCiNE": "DDFNetworkVR 18 01 09 Kira Queen Sugar Daddy for the Queen",
+		"Haley Spades, Remy Rune - Seductive Science - Ember Moans":                              "Haley Spades Remy Rune Seductive Science Ember Moans",
 	}
 	for in, want := range cases {
-		if got := FilenameTerms(in); got != want {
-			t.Errorf("FilenameTerms(%q)\n got %q\nwant %q", in, got, want)
+		if got := CleanTerms(in); got != want {
+			t.Errorf("CleanTerms(%q)\n got %q\nwant %q", in, got, want)
 		}
 	}
 }
 
-func TestBuildQueryPutsContextFirstAndStaysWithinLimits(t *testing.T) {
-	q := BuildQuery("cleo-vega-sweet-pink-bunny.mp4", "EthernalVR")
-	if q != "EthernalVR cleo vega sweet pink bunny VR" {
+func TestBuildQuery(t *testing.T) {
+	file := &FileInfo{Filename: "cleo-vega-sweet-pink-bunny.mp4", Context: "EthernalVR"}
+	if q := BuildQuery(file); q != "EthernalVR cleo vega sweet pink bunny VR" {
 		t.Errorf("query = %q", q)
 	}
-	long := BuildQuery(strings.Repeat("word_", 80)+".mp4", "")
-	if n := len(strings.Fields(long)); n > 45 {
+
+	// A scene's own folder is used, without repeating words the filename also has.
+	file = &FileInfo{
+		Filename:      "Dezyred_Seductive+Science+-+Ember+Moans_4096p_8K_LR_180.mp4",
+		Folder:        "Haley Spades, Remy Rune - Seductive Science - Ember Moans",
+		FolderIsScene: true,
+	}
+	if q := BuildQuery(file); q != "Haley Spades Remy Rune Seductive Science Ember Moans Dezyred VR" {
+		t.Errorf("query = %q", q)
+	}
+
+	// A shared folder is not.
+	file.FolderIsScene = false
+	if q := BuildQuery(file); strings.Contains(q, "Haley") {
+		t.Errorf("a shared folder's name leaked into the query: %q", q)
+	}
+
+	long := BuildQuery(&FileInfo{Filename: strings.Repeat("word_", 80) + ".mp4"})
+	if n := len(strings.Fields(long)); n > 46 {
 		t.Errorf("query has %d words; Brave allows 50", n)
 	}
-	if !strings.HasSuffix(long, "VR") {
-		t.Errorf("truncated query should still end with VR: %q", long)
+	if strings.Count(long, "word") != 1 {
+		t.Errorf("repeated words should appear once: %q", long)
 	}
 }

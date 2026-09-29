@@ -154,25 +154,36 @@ func init() {
 	for _, w := range strings.Fields(`180 180x180 2880x1440 3d 3dh 3dv 30fps 30m 360 3840x1920 4k 5k 5400x2700
 		60fps 6k 7k 7680x3840 8k fb360 fisheye190 funscript cmscript h264 h265 hevc hq hsp lq lr mkv mkx200
 		mkx220 mono mp4 oculus oculus5k oculusrift original rf52 smartphone srt ssa tb uhd vrca220 vp9
-		sbs fisheye 6k60 8k60 4k60 x265 x264 webrip`) {
+		sbs fisheye 6k60 8k60 4k60 x265 x264 webrip vr180 vr360`) {
 		commonFilenameWords[w] = true
 	}
 }
 
 var (
-	filenameSepRe   = regexp.MustCompile(`[._+'’` + "`" + `\-\[\]()]+`)
+	filenameSepRe   = regexp.MustCompile(`[._+,'’` + "`" + `\-\[\]()]+`)
 	resolutionTokRe = regexp.MustCompile(`(?i)^\d{3,5}p(\d{2})?$`)
-	extRe           = regexp.MustCompile(`(?i)\.(mp4|mkv|avi|mov|wmv|m4v|webm)$`)
+	extRe           = regexp.MustCompile(`(?i)(\.(mp4|mkv|avi|mov|wmv|m4v|webm))+$`)
+	personNameRe    = regexp.MustCompile(`^([A-Z][a-z]{2,})([A-Z][a-z]{2,})$`)
+	longNumberRe    = regexp.MustCompile(`\d{5,}`)
 )
 
-// FilenameTerms turns a video filename into search terms by dropping the extension, separators,
-// and format/resolution tokens.
-func FilenameTerms(filename string) string {
-	name := extRe.ReplaceAllString(filename, "")
+// CleanTerms turns a video filename or folder name into search terms. It drops the extension,
+// separators, format and resolution tokens, and release-name metadata: everything after a
+// standalone XXX, and tokens carrying five or more digits, which are IDs and hashes rather than
+// words. Performer names run together as FirstLast are split.
+func CleanTerms(name string) string {
+	name = extRe.ReplaceAllString(name, "")
 	var out []string
 	for _, w := range strings.Fields(filenameSepRe.ReplaceAllString(name, " ")) {
 		lw := strings.ToLower(w)
-		if commonFilenameWords[lw] || resolutionTokRe.MatchString(lw) {
+		if lw == "xxx" {
+			break
+		}
+		if commonFilenameWords[lw] || resolutionTokRe.MatchString(lw) || longNumberRe.MatchString(w) {
+			continue
+		}
+		if m := personNameRe.FindStringSubmatch(w); m != nil {
+			out = append(out, m[1], m[2])
 			continue
 		}
 		out = append(out, w)
@@ -180,16 +191,46 @@ func FilenameTerms(filename string) string {
 	return strings.Join(out, " ")
 }
 
-// BuildQuery combines a filename with the user's saved context into a web search query, within
-// Brave's 50-word limit.
-func BuildQuery(filename, context string) string {
-	terms := FilenameTerms(filename)
-	if c := strings.TrimSpace(context); c != "" {
-		terms = c + " " + terms
+// FilenameTerms is CleanTerms for a filename.
+func FilenameTerms(filename string) string { return CleanTerms(filename) }
+
+// BuildQuery builds the web search query for a file from the user's saved context, the folder
+// name when the folder is the scene's own, and the filename, in that order of trust, without
+// repeating a word, within Brave's 50-word limit.
+func BuildQuery(file *FileInfo) string {
+	words := dedupeWords(strings.Fields(strings.Join([]string{
+		strings.TrimSpace(file.Context), file.FolderTerms(), FilenameTerms(file.Filename),
+	}, " ")))
+	hasVR := false
+	for _, w := range words {
+		if strings.EqualFold(w, "vr") {
+			hasVR = true
+		}
 	}
-	words := strings.Fields(terms + " VR")
 	if len(words) > 45 {
-		words = append(words[:44], "VR")
+		words = words[:45]
+	}
+	if !hasVR {
+		words = append(words, "VR")
 	}
 	return truncate(strings.Join(words, " "), 390)
+}
+
+// LocalSearchTerms is the folder and filename part of BuildQuery, for XBVR's own scene search.
+func LocalSearchTerms(file *FileInfo) string {
+	return strings.Join(dedupeWords(strings.Fields(file.FolderTerms()+" "+FilenameTerms(file.Filename))), " ")
+}
+
+func dedupeWords(words []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, w := range words {
+		k := strings.ToLower(w)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, w)
+	}
+	return out
 }

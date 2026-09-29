@@ -175,7 +175,12 @@ func (i LLMScrapeResource) getContext(req *restful.Request, resp *restful.Respon
 		resp.WriteHeaderAndEntity(http.StatusBadRequest, map[string]string{"error": "invalid file id"})
 		return
 	}
-	resp.WriteHeaderAndEntity(http.StatusOK, map[string]string{"context": models.GetFileMatchContext(id)})
+	out := map[string]string{"context": models.GetFileMatchContext(id)}
+	// The match screen adds these to its own search, so both searches use the scene's folder.
+	if file, err := llmdraft.LoadFileInfo(id); err == nil {
+		out["folder_terms"] = file.FolderTerms()
+	}
+	resp.WriteHeaderAndEntity(http.StatusOK, out)
 }
 
 func (i LLMScrapeResource) setContext(req *restful.Request, resp *restful.Response) {
@@ -205,7 +210,7 @@ func (i LLMScrapeResource) suggest(req *restful.Request, resp *restful.Response)
 	}
 	ctx, cancel := context.WithTimeout(req.Request.Context(), 10*time.Minute)
 	defer cancel()
-	res, err := svc.SuggestForFile(ctx, id)
+	res, err := svc.SuggestForFile(ctx, id, req.QueryParameter("refresh") == "true")
 	if err != nil {
 		resp.WriteHeaderAndEntity(http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
