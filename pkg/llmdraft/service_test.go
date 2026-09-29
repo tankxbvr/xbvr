@@ -222,3 +222,33 @@ func TestParentPageGivesEachPartItsOwnScene(t *testing.T) {
 		t.Error("the same part must keep its scene ID across runs")
 	}
 }
+
+func TestRegistrableDomain(t *testing.T) {
+	cases := map[string]string{
+		"https://cdns127.hqcollect.is/uploads/x.jpg": "hqcollect.is",
+		"https://www.ptorrents.com/dezyred.htm":      "ptorrents.com",
+		"https://shop.example.co.uk/a":               "example.co.uk",
+		"https://pornolab.net/forum/viewtopic.php":   "pornolab.net",
+		"not a url": "",
+	}
+	for in, want := range cases {
+		if got := registrableDomain(in); got != want {
+			t.Errorf("registrableDomain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLearnedDomainsNeedTwoSightingsAndCanBeAllowed(t *testing.T) {
+	m := map[string]*LearnedDomain{
+		"once.com":    {Domain: "once.com", Count: 1},
+		"twice.com":   {Domain: "twice.com", Count: 2},
+		"allowed.com": {Domain: "allowed.com", Count: 9, Allowed: true},
+	}
+	got := blockedDomains(m)
+	if len(got) != 1 || got[0] != "twice.com" {
+		t.Errorf("blocked = %v; want only twice.com", got)
+	}
+	if !DomainBlocked("https://cdn.twice.com/x", got) {
+		t.Error("subdomains of a learned domain should be skipped too")
+	}
+}

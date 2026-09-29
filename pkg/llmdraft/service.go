@@ -165,6 +165,9 @@ func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, fi
 	}
 	llmscrape.ApplyDurationCheck(ext, file)
 	llmscrape.ApplyNameCheck(ext, file)
+	if ext.PageKind == llmscrape.KindDownload {
+		RecordDownloadSite(rawURL)
+	}
 
 	if !keepAny {
 		switch {
@@ -302,6 +305,9 @@ type SuggestResult struct {
 	FileID  uint           `json:"file_id"`
 	Query   string         `json:"query"`
 	Results []ScrapeResult `json:"results"`
+	// KnownDownloadSites counts search results skipped without being read because their domain
+	// has already been recognised as a download or piracy site.
+	KnownDownloadSites int `json:"known_download_sites"`
 }
 
 // SuggestForFile searches the web for the file's scene and turns the promising pages into drafts.
@@ -324,15 +330,25 @@ func (s *Service) SuggestForFile(ctx context.Context, fileID uint, refresh bool)
 	}
 	out := &SuggestResult{FileID: fileID, Query: llmscrape.BuildQuery(file)}
 
-	hits, err := s.searcher.Search(ctx, out.Query, s.settings.ResultsPerFile*2)
+	// Ask for the most results one query allows: skipped results cost nothing, and without spare
+	// ones a page of piracy links leaves nothing to read.
+	hits, err := s.searcher.Search(ctx, out.Query, 20)
 	if err != nil {
 		return nil, err
 	}
 	models.MarkFileSearched(fileID)
 	known := draftedURLs(fileID)
+	var learned []string
+	if s.settings.SkipDownloadSites {
+		learned = LearnedBlocked()
+	}
 	var urls []string
 	for _, h := range hits {
 		if known[h.URL] || DomainBlocked(h.URL, s.settings.BlockedDomains) {
+			continue
+		}
+		if DomainBlocked(h.URL, learned) {
+			out.KnownDownloadSites++
 			continue
 		}
 		known[h.URL] = true
