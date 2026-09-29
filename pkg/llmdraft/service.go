@@ -168,7 +168,7 @@ func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, fi
 
 	if !keepAny {
 		switch {
-		case !ext.IsScenePage:
+		case !ext.IsScenePage && !ext.IsParentPage:
 			res.Skipped = "not a page about a single scene: " + ext.Reason
 			return res
 		case s.settings.SkipDownloadSites && ext.PageKind == llmscrape.KindDownload:
@@ -220,12 +220,21 @@ func BuildScrapedScene(page *llmscrape.Page, ext *llmscrape.Extraction, file *ll
 		sum := sha1.Sum([]byte(home))
 		idPart = hex.EncodeToString(sum[:])[:10]
 	}
+	title := ext.Title
+	// A page about a whole game or series serves every part of it, so the part names the scene,
+	// and each part needs its own ID or saving a second ending would overwrite the first.
+	if ext.IsParentPage && ext.PartTitle != "" {
+		idPart += "-" + ext.PartTitle
+		if !strings.Contains(strings.ToLower(title), strings.ToLower(ext.PartTitle)) {
+			title = strings.TrimSpace(title + " - " + ext.PartTitle)
+		}
+	}
 
 	scene := models.ScrapedScene{
 		SceneID:     slugify.Slugify("llm-" + site + "-" + idPart),
 		SiteID:      idPart,
 		SceneType:   "VR",
-		Title:       ext.Title,
+		Title:       title,
 		Studio:      studio,
 		Site:        site,
 		Cast:        ext.Cast,

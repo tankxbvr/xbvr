@@ -204,3 +204,21 @@ func TestCollapseDuplicatesKeepsTheBest(t *testing.T) {
 		t.Error("a different scene must not be collapsed")
 	}
 }
+
+func TestParentPageGivesEachPartItsOwnScene(t *testing.T) {
+	page := &llmscrape.Page{URL: "https://dezyred.com/games/seductive-science"}
+	part := func(name string) models.ScrapedScene {
+		return BuildScrapedScene(page, &llmscrape.Extraction{PageKind: llmscrape.KindOfficial, IsParentPage: true,
+			PartTitle: name, Title: "Seductive Science", Studio: "Dezyred", CoverImage: -1, Trailer: -1}, nil)
+	}
+	a, b := part("Ember Moans"), part("Final Exam")
+	if a.Title != "Seductive Science - Ember Moans" || b.Title != "Seductive Science - Final Exam" {
+		t.Errorf("titles %q / %q", a.Title, b.Title)
+	}
+	if a.SceneID == b.SceneID {
+		t.Errorf("two endings of one game share scene ID %q; saving one would overwrite the other", a.SceneID)
+	}
+	if again := part("Ember Moans"); again.SceneID != a.SceneID {
+		t.Error("the same part must keep its scene ID across runs")
+	}
+}
