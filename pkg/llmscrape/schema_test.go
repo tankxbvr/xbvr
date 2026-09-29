@@ -221,3 +221,47 @@ func TestApplyNameCheck(t *testing.T) {
 		t.Error("with no words to compare, confidence must be left alone")
 	}
 }
+
+func TestDurationPreviewFromTheSameStudio(t *testing.T) {
+	file := &FileInfo{Filename: "vac-ddfnvr180109kqsdq-2160.mp4", DurationMinutes: 27, FolderIsScene: true,
+		Folder: "DDFNetworkVR.18.01.09.Kira.Queen.Sugar.Daddy.for.the.Queen.XXX.VR180.2160p.MP4-VACCiNE"}
+	tube := &Extraction{MatchConfidence: 0.9, DurationMinutes: 12, Studio: "DDF Network VR", Title: "Sugar Daddy for the Queen"}
+	ApplyDurationCheck(tube, file)
+	if tube.MatchConfidence != 0.9 || tube.DurationMinutes != 0 || !strings.Contains(tube.Reason, "preview") {
+		t.Errorf("a same-studio page with a short clip is a preview: conf %.2f dur %d %q", tube.MatchConfidence, tube.DurationMinutes, tube.Reason)
+	}
+
+	edit := &Extraction{MatchConfidence: 0.9, DurationMinutes: 12, Studio: "HeatFlow PMV", Title: "Sugar Daddy for the Queen"}
+	ApplyDurationCheck(edit, file)
+	if edit.MatchConfidence != 0.3 {
+		t.Errorf("another studio's short version is an edit and should be capped, got %.2f", edit.MatchConfidence)
+	}
+
+	game := &Extraction{MatchConfidence: 0.9, DurationMinutes: 180, IsParentPage: true}
+	ApplyDurationCheck(game, file)
+	if game.MatchConfidence != 0.9 || game.DurationMinutes != 0 {
+		t.Errorf("a game page's total running time must be dropped, not held against the part: %.2f %d", game.MatchConfidence, game.DurationMinutes)
+	}
+}
+
+func TestParentPageFields(t *testing.T) {
+	raw := func(scene, parent bool, part string) json.RawMessage {
+		b, _ := json.Marshal(map[string]any{"is_scene_page": scene, "is_parent_page": parent, "part_title": part,
+			"page_kind": "official_studio", "match_confidence": 0.9, "reason": "", "title": "Seductive Science",
+			"studio": "", "site": "", "site_scene_id": "", "cast": []string{}, "tags": []string{}, "synopsis": "",
+			"released": "", "duration_minutes": 0, "cover_image": -1, "gallery_images": []int{}, "trailer": -1})
+		return b
+	}
+	e, _ := ParseExtraction(raw(false, true, " Ember  Moans "), &Page{})
+	if !e.IsParentPage || e.PartTitle != "Ember Moans" {
+		t.Errorf("parent page kept wrongly: %v %q", e.IsParentPage, e.PartTitle)
+	}
+	e, _ = ParseExtraction(raw(true, true, "Ember Moans"), &Page{})
+	if e.IsParentPage || e.PartTitle != "" {
+		t.Error("a page about the part itself wins over a parent page")
+	}
+	e, _ = ParseExtraction(raw(false, false, "stray"), &Page{})
+	if e.PartTitle != "" {
+		t.Error("part_title only means something on a parent page")
+	}
+}

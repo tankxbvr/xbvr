@@ -27,6 +27,8 @@ var pageKinds = []string{KindOfficial, KindStore, KindDownload, KindForum, KindO
 // page's candidate lists, so the model can only pick URLs that exist on the page.
 type Extraction struct {
 	IsScenePage     bool     `json:"is_scene_page"`
+	IsParentPage    bool     `json:"is_parent_page"`
+	PartTitle       string   `json:"part_title"`
 	PageKind        string   `json:"page_kind"`
 	MatchConfidence float64  `json:"match_confidence"`
 	Reason          string   `json:"reason"`
@@ -76,6 +78,9 @@ func ExtractionSchema(numImages, numVideos int) map[string]any {
 	props := map[string]any{
 		"is_scene_page": map[string]any{"type": "boolean",
 			"description": "True only if the page is about one specific video scene. False for search results, performer profiles, category listings, home pages and pages about a different scene."},
+		"is_parent_page": map[string]any{"type": "boolean",
+			"description": "True if the page is about a game, series or multi-part production that the file is one part, chapter, branch or ending of, rather than about the part itself. Interactive VR games release each ending or branch as a separate file. False when is_scene_page is true."},
+		"part_title": str("When is_parent_page is true: the name of the file's own part, branch or ending, taken from the filename, folder or notes (for example 'Ember Moans'). Empty otherwise."),
 		"page_kind": map[string]any{"type": "string", "enum": toAny(pageKinds),
 			"description": "official_studio: the website of the studio that produced the scene, whose domain belongs to that studio. store_or_aggregator: a site carrying scenes from many studios, such as a store, streaming or tube site. download_or_piracy: file hosts, siterips, torrents, direct downloads. forum_or_review: discussion or reviews."},
 		"match_confidence": map[string]any{"type": "number",
@@ -101,7 +106,7 @@ func ExtractionSchema(numImages, numVideos int) map[string]any {
 
 	// Strict structured output requires every property to be listed as required; absence is
 	// expressed with the empty values the descriptions give instead.
-	required := []string{"is_scene_page", "page_kind", "match_confidence", "reason", "title", "studio", "site",
+	required := []string{"is_scene_page", "is_parent_page", "part_title", "page_kind", "match_confidence", "reason", "title", "studio", "site",
 		"site_scene_id", "cast", "tags", "synopsis", "released", "duration_minutes", "cover_image", "gallery_images", "trailer"}
 	return map[string]any{
 		"type":                 "object",
@@ -146,8 +151,12 @@ Rules:
 - Images and videos are chosen by index from the numbered candidate lists. Never write a URL.
 - A page can describe the right scene without being a scene page (for example a performer page
   listing it); in that case is_scene_page is false.
-- Judge match_confidence against the file: studio, performers and title words should agree, and
-  a known file duration should be close to the page's running time.
+- Judge match_confidence on identity: the studio, performers and title must agree with the file.
+  Do not rule a page out on running time: store and tube pages often list a preview's length.
+  Running time is checked separately.
+- Some studios, Dezyred for example, make interactive games and release each ending or branch as
+  its own file. A page about the whole game is a parent page for such a file, not a different
+  scene: set is_parent_page and give the file's branch as part_title.
 - Filenames often abbreviate the studio: FPVR is FuckPassVR, DRVR is DarkRoomVR, SLR is
   SexLikeReal, VRB is VRBangers. A page from a different studio than the file names describes a
   different scene, however similar the title.
@@ -295,6 +304,13 @@ func ParseExtraction(raw json.RawMessage, page *Page) (*Extraction, error) {
 	e.Synopsis = StripBoilerplate(e.Synopsis)
 	e.Reason = truncate(collapse(e.Reason), 300)
 
+	e.PartTitle = collapse(e.PartTitle)
+	if e.IsScenePage {
+		e.IsParentPage = false // a page about the part itself is the better source
+	}
+	if !e.IsParentPage {
+		e.PartTitle = ""
+	}
 	if !contains(pageKinds, e.PageKind) {
 		e.PageKind = KindOther
 	}
@@ -343,7 +359,16 @@ func ParseExtraction(raw json.RawMessage, page *Page) (*Extraction, error) {
 // ApplyDurationCheck caps the confidence of a page whose running time is far from the file's. Models
 // weigh a matching title and performer above a mismatched length, which makes trailers, PMVs and
 // compilations of a scene look like the scene itself. Both durations must be known.
+//
+// When the page is from the studio the file names, a shorter running time is a preview's, as
+// store and tube pages list: the page keeps its confidence and the preview length is dropped so it
+// is not stored as the scene's. A parent page's running time is the whole production's, never the
+// part's, so it is dropped too.
 func ApplyDurationCheck(e *Extraction, file *FileInfo) {
+	if e.IsParentPage {
+		e.DurationMinutes = 0
+		return
+	}
 	if file == nil || file.DurationMinutes <= 0 || e.DurationMinutes <= 0 {
 		return
 	}
@@ -355,12 +380,51 @@ func ApplyDurationCheck(e *Extraction, file *FileInfo) {
 	if tolerance < 3 {
 		tolerance = 3
 	}
-	if diff <= tolerance || e.MatchConfidence <= 0.3 {
+	if diff <= tolerance {
+		return
+	}
+	if studioAgrees(e, file) {
+		e.Reason = strings.TrimSpace(fmt.Sprintf("%s The page's %d min is a preview's length; the file is %d min.",
+			e.Reason, e.DurationMinutes, file.DurationMinutes))
+		e.DurationMinutes = 0
+		return
+	}
+	if e.MatchConfidence <= 0.3 {
 		return
 	}
 	e.MatchConfidence = 0.3
 	e.Reason = strings.TrimSpace(fmt.Sprintf("%s Running time %d min does not match the file's %d min.",
 		e.Reason, e.DurationMinutes, file.DurationMinutes))
+}
+
+// studioAgrees reports whether the page's studio or site is named by the file's name, its own
+// folder or the user's notes, which tells a store's preview of the scene apart from someone
+// else's edit of it.
+func studioAgrees(e *Extraction, file *FileInfo) bool {
+	known := knownTokens(file)
+	for _, name := range []string{e.Studio, e.Site} {
+		parts := nameTokens(name)
+		all := len(parts) > 0
+		for _, w := range parts {
+			all = all && known[w]
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// knownTokens is what is known about the file, as comparable words.
+func knownTokens(file *FileInfo) map[string]bool {
+	known := map[string]bool{}
+	if file == nil {
+		return known
+	}
+	for _, w := range nameTokens(CleanTerms(file.Filename) + " " + file.FolderTerms() + " " + file.Context) {
+		known[w] = true
+	}
+	return known
 }
 
 var (
@@ -399,10 +463,7 @@ func ApplyNameCheck(e *Extraction, file *FileInfo) {
 	if file == nil || e.MatchConfidence <= 0.4 {
 		return
 	}
-	known := map[string]bool{}
-	for _, w := range nameTokens(CleanTerms(file.Filename) + " " + file.FolderTerms() + " " + file.Context) {
-		known[w] = true
-	}
+	known := knownTokens(file)
 	if len(known) == 0 {
 		return // nothing to compare against, e.g. a file named "vr4_2x.mp4"
 	}
