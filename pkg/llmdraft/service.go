@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -163,6 +164,7 @@ func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, fi
 		return res
 	}
 	llmscrape.ApplyDurationCheck(ext, file)
+	llmscrape.ApplyNameCheck(ext, file)
 
 	if !keepAny {
 		switch {
@@ -294,8 +296,11 @@ type SuggestResult struct {
 }
 
 // SuggestForFile searches the web for the file's scene and turns the promising pages into drafts.
-// Pages already drafted for this file, including rejected ones, are not scraped again.
-func (s *Service) SuggestForFile(ctx context.Context, fileID uint) (*SuggestResult, error) {
+// Pages already drafted for this file, including rejected ones, are not scraped again. With
+// refresh, the file's unreviewed drafts from earlier searches are replaced rather than kept, so
+// a better query or better checks get to re-judge those pages; rejected drafts and drafts from a
+// pasted URL are kept.
+func (s *Service) SuggestForFile(ctx context.Context, fileID uint, refresh bool) (*SuggestResult, error) {
 	if s.searcher == nil {
 		return nil, errors.New("no web search provider is configured (add a Brave Search API key)")
 	}
@@ -303,7 +308,12 @@ func (s *Service) SuggestForFile(ctx context.Context, fileID uint) (*SuggestResu
 	if err != nil {
 		return nil, err
 	}
-	out := &SuggestResult{FileID: fileID, Query: llmscrape.BuildQuery(file.Filename, file.Context)}
+	if refresh {
+		if err := clearSearchDrafts(fileID); err != nil {
+			return nil, err
+		}
+	}
+	out := &SuggestResult{FileID: fileID, Query: llmscrape.BuildQuery(file)}
 
 	hits, err := s.searcher.Search(ctx, out.Query, s.settings.ResultsPerFile*2)
 	if err != nil {
@@ -424,14 +434,34 @@ func LoadFileInfo(fileID uint) (*llmscrape.FileInfo, error) {
 	db, _ := models.GetDB()
 	defer db.Close()
 	var f models.File
-	if err := db.Where(&models.File{ID: fileID}).First(&f).Error; err != nil {
+	if err := db.Preload("Volume").Where(&models.File{ID: fileID}).First(&f).Error; err != nil {
 		return nil, fmt.Errorf("file %d not found", fileID)
 	}
+
+	// A folder holding just this one video is the scene's own and its name usually describes the
+	// scene; a folder shared by several, or the library root, is only a place.
+	var videosInFolder int
+	db.Model(&models.File{}).Where("path = ? AND type = ?", f.Path, "video").Count(&videosInFolder)
+	isRoot := strings.TrimRight(f.Path, "/") == strings.TrimRight(f.Volume.Path, "/")
+
 	return &llmscrape.FileInfo{
 		Filename:        f.Filename,
 		DurationMinutes: int(f.VideoDuration / 60),
 		Context:         models.GetFileMatchContext(fileID),
+		Folder:          filepath.Base(f.Path),
+		FolderIsScene:   videosInFolder == 1 && !isRoot,
 	}, nil
+}
+
+// clearSearchDrafts deletes a file's unreviewed drafts that came from a web search. Drafts from a
+// pasted URL have no query and are kept, as are rejected ones, which stop a page being proposed.
+func clearSearchDrafts(fileID uint) error {
+	db, _ := models.GetDB()
+	defer db.Close()
+	return models.RetryIfBusy(func() error {
+		return db.Where("file_id = ? AND status = ? AND query <> ''", fileID, models.DraftStatusDraft).
+			Delete(&models.DraftScene{}).Error
+	})
 }
 
 func draftedURLs(fileID uint) map[string]bool {

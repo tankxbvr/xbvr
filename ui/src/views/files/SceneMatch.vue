@@ -314,14 +314,31 @@ export default {
       const fileId = this.file.id
       try {
         const r = await ky.get(`/api/llmscrape/context/${fileId}`).json()
-        if (!this.stillOn(fileId) || !r.context) return
-        this.matchContext = r.context
-        this.savedContext = r.context
-        this.queryString = (this.baseQuery + ' ' + r.context).trim()
-        this.loadData()
+        if (!this.stillOn(fileId)) return
+        if (r.folder_terms) {
+          // The folder holds only this video, so its name describes the scene.
+          this.baseQuery = this.withoutRepeats(r.folder_terms + ' ' + this.baseQuery)
+        }
+        if (r.context) {
+          this.matchContext = r.context
+          this.savedContext = r.context
+        }
+        if (r.folder_terms || r.context) {
+          this.queryString = (this.baseQuery + ' ' + (r.context || '')).trim()
+          this.loadData()
+        }
       } catch (e) {
         // The match screen works without the LLM scraper.
       }
+    },
+    withoutRepeats (text) {
+      const seen = new Set()
+      return text.split(/\s+/).filter(w => {
+        const k = w.toLowerCase()
+        if (!w || seen.has(k)) return false
+        seen.add(k)
+        return true
+      }).join(' ')
     },
     async saveContext () {
       const fileId = this.file.id
@@ -357,7 +374,9 @@ export default {
       this.suggesting = true
       this.lastRunNotes = []
       try {
-        const r = await ky.post(`/api/llmscrape/suggest/${fileId}`, { timeout: 600000 }).json()
+        // Replaces this file's unreviewed search drafts, so they are judged again with the
+        // current context; rejected drafts and pasted URLs stay.
+        const r = await ky.post(`/api/llmscrape/suggest/${fileId}`, { searchParams: { refresh: true }, timeout: 600000 }).json()
         if (!this.stillOn(fileId)) return
         this.lastQuery = r.query
         this.lastRunNotes = (r.results || []).filter(x => !x.draft)

@@ -45,7 +45,8 @@ func StopBatch() {
 }
 
 // StartBatch searches for drafts for every unmatched video file in the background. Files that
-// already have drafts or were already searched are skipped unless force is set; limit 0 means no limit. It returns false
+// already have drafts or were already searched are skipped unless force is set, in which case
+// their unreviewed search drafts are replaced; limit 0 means no limit. It returns false
 // when a batch is already running.
 func StartBatch(userAgent string, force bool, limit int) (bool, error) {
 	svc, err := NewService(userAgent)
@@ -71,7 +72,7 @@ func StartBatch(userAgent string, force bool, limit int) (bool, error) {
 				break
 			}
 			setCurrent(id)
-			res, err := svc.SuggestForFile(ctx, id)
+			res, err := svc.SuggestForFile(ctx, id, force)
 
 			batchMu.Lock()
 			batchState.Done++

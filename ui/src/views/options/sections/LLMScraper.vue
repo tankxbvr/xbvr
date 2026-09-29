@@ -106,7 +106,7 @@
               <b-numberinput v-model="batchLimit" :min="0" :max="10000" controls-position="compact"/>
             </b-field>
             <b-field>
-              <b-checkbox v-model="batchForce">Search again files that were already searched</b-checkbox>
+              <b-checkbox v-model="batchForce">Search again files that were already searched (replaces their unreviewed drafts)</b-checkbox>
             </b-field>
           </b-field>
           <b-field grouped>
