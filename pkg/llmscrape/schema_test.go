@@ -265,3 +265,20 @@ func TestParentPageFields(t *testing.T) {
 		t.Error("part_title only means something on a parent page")
 	}
 }
+
+func TestExtractionSchemaCapsEveryStringAndList(t *testing.T) {
+	props := ExtractionSchema(3, 1)["properties"].(map[string]any)
+	for name, v := range props {
+		p := v.(map[string]any)
+		switch p["type"] {
+		case "string":
+			if _, ok := p["maxLength"]; !ok && p["pattern"] == nil && p["enum"] == nil {
+				t.Errorf("%s: string without maxLength can run the answer past its token budget", name)
+			}
+		case "array":
+			if _, ok := p["maxItems"]; !ok {
+				t.Errorf("%s: list without maxItems", name)
+			}
+		}
+	}
+}

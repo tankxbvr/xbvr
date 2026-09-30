@@ -49,9 +49,15 @@ type Extraction struct {
 // ExtractionSchema builds the JSON schema for one page. The image and trailer fields are enums of
 // that page's candidate indexes, with -1 meaning none.
 func ExtractionSchema(numImages, numVideos int) map[string]any {
-	str := func(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
-	strList := func(desc string) map[string]any {
-		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": desc}
+	// Every string and list is capped. Constrained decoding enforces the caps, so a page whose
+	// text the model would otherwise copy out at length (forum posts, long descriptions) cannot run
+	// the answer past its token budget and leave invalid, truncated JSON.
+	str := func(max int, desc string) map[string]any {
+		return map[string]any{"type": "string", "maxLength": max, "description": desc}
+	}
+	strList := func(maxItems, maxLen int, desc string) map[string]any {
+		return map[string]any{"type": "array", "maxItems": maxItems,
+			"items": map[string]any{"type": "string", "maxLength": maxLen}, "description": desc}
 	}
 	indexEnum := func(n int, allowNone bool) []any {
 		var e []any
@@ -68,6 +74,7 @@ func ExtractionSchema(numImages, numVideos int) map[string]any {
 		"type":        "array",
 		"description": fmt.Sprintf("Indexes of up to %d image candidates that are stills or promotional photos from this scene, best first. Exclude the cover, logos, banners and images of other scenes.", maxGallery),
 		"items":       map[string]any{"type": "integer"},
+		"maxItems":    maxGallery,
 	}
 	if numImages > 0 {
 		gallery["items"] = map[string]any{"type": "integer", "enum": indexEnum(numImages, false)}
@@ -80,19 +87,19 @@ func ExtractionSchema(numImages, numVideos int) map[string]any {
 			"description": "True only if the page is about one specific video scene. False for search results, performer profiles, category listings, home pages and pages about a different scene."},
 		"is_parent_page": map[string]any{"type": "boolean",
 			"description": "True if the page is about a game, series or multi-part production that the file is one part, chapter, branch or ending of, rather than about the part itself. Interactive VR games release each ending or branch as a separate file. False when is_scene_page is true."},
-		"part_title": str("When is_parent_page is true: the name of the file's own part, branch or ending, taken from the filename, folder or notes (for example 'Ember Moans'). Empty otherwise."),
+		"part_title": str(100, "When is_parent_page is true: the name of the file's own part, branch or ending, taken from the filename, folder or notes (for example 'Ember Moans'). Empty otherwise."),
 		"page_kind": map[string]any{"type": "string", "enum": toAny(pageKinds),
 			"description": "official_studio: the website of the studio that produced the scene, whose domain belongs to that studio. store_or_aggregator: a site carrying scenes from many studios, such as a store, streaming or tube site. download_or_piracy: file hosts, siterips, torrents, direct downloads. forum_or_review: discussion or reviews."},
 		"match_confidence": map[string]any{"type": "number",
 			"description": "0 to 1: how confident you are that this page describes the same scene as the file being matched, judging title, performers, studio and duration together."},
-		"reason":        str("One short sentence explaining match_confidence."),
-		"title":         str("The scene's own title only. Strip performer names, studio or site names and resolution that prefix or suffix it: 'Jane Doe: Summer Heat' and 'Summer Heat - ExampleVR' are both 'Summer Heat'. Empty if not shown."),
-		"studio":        str("The production studio. Empty if not shown."),
-		"site":          str("The brand or channel the scene belongs to, usually the studio's site name. Not the website hosting this page when that is a store or aggregator carrying many studios."),
-		"site_scene_id": str("The site's own identifier for this scene if it is visible in the URL or page, otherwise empty."),
-		"cast":          strList("Performer names only, as full names. No roles or character names."),
-		"tags":          strList(fmt.Sprintf("Genre and category tags exactly as shown on the page, at most %d.", maxTags)),
-		"synopsis":      str("The scene's own description, verbatim or lightly cleaned. Ignore site boilerplate and SEO text about streaming, downloading or the website itself. Empty if there is no real description."),
+		"reason":        str(300, "One short sentence explaining match_confidence."),
+		"title":         str(200, "The scene's own title only. Strip performer names, studio or site names and resolution that prefix or suffix it: 'Jane Doe: Summer Heat' and 'Summer Heat - ExampleVR' are both 'Summer Heat'. Empty if not shown."),
+		"studio":        str(100, "The production studio. Empty if not shown."),
+		"site":          str(100, "The brand or channel the scene belongs to, usually the studio's site name. Not the website hosting this page when that is a store or aggregator carrying many studios."),
+		"site_scene_id": str(100, "The site's own identifier for this scene if it is visible in the URL or page, otherwise empty."),
+		"cast":          strList(30, 80, "Performer names only, as full names. No roles or character names."),
+		"tags":          strList(maxTags, 60, fmt.Sprintf("Genre and category tags exactly as shown on the page, at most %d.", maxTags)),
+		"synopsis":      str(3000, "The scene's own description, verbatim or lightly cleaned. Ignore site boilerplate and SEO text about streaming, downloading or the website itself. Empty if there is no real description."),
 		"released": map[string]any{"type": "string", "pattern": `^(\d{4}-\d{2}-\d{2})?$`,
 			"description": "Release date as YYYY-MM-DD, or empty if the page does not show one."},
 		"duration_minutes": map[string]any{"type": "integer",
