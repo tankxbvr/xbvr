@@ -199,6 +199,9 @@ type ObjectConfig struct {
 		ResultsPerFile int     `default:"5" json:"resultsPerFile"`
 		MinConfidence  float64 `default:"0.5" json:"minConfidence"`
 		Concurrency    int     `default:"2" json:"concurrency"`
+		// Overview, gallery and listing pages link to the scene's own page. This is how many
+		// such links the scraper follows before it stops and judges the last page it read.
+		MaxFollowRounds int `default:"2" json:"maxFollowRounds"`
 		// Pages the LLM classifies as download or piracy sites are not turned into drafts.
 		SkipDownloadSites bool `default:"true" json:"skipDownloadSites"`
 		// One domain per line or comma separated; subdomains are included.

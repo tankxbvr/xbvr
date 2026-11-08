@@ -34,6 +34,7 @@ type RequestLLMScrapeConfig struct {
 	ResultsPerFile       int     `json:"resultsPerFile"`
 	MinConfidence        float64 `json:"minConfidence"`
 	Concurrency          int     `json:"concurrency"`
+	MaxFollowRounds      int     `json:"maxFollowRounds"`
 	SkipDownloadSites    bool    `json:"skipDownloadSites"`
 	BlockedDomains       string  `json:"blockedDomains"`
 	AllowPrivateNetworks bool    `json:"allowPrivateNetworks"`
@@ -131,6 +132,7 @@ func (i LLMScrapeResource) saveConfig(req *restful.Request, resp *restful.Respon
 	c.ResultsPerFile = r.ResultsPerFile
 	c.MinConfidence = r.MinConfidence
 	c.Concurrency = r.Concurrency
+	c.MaxFollowRounds = r.MaxFollowRounds
 	c.SkipDownloadSites = r.SkipDownloadSites
 	c.BlockedDomains = r.BlockedDomains
 	c.AllowPrivateNetworks = r.AllowPrivateNetworks

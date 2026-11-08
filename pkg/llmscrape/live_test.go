@@ -41,7 +41,7 @@ func TestLive(t *testing.T) {
 	}
 
 	start = time.Now()
-	raw, err := client.Complete(ctx, BuildMessages(page, file), "xbvr_scene", ExtractionSchema(len(page.Images), len(page.Videos)), 4000)
+	raw, err := client.Complete(ctx, BuildMessages(page, file), "xbvr_scene", ExtractionSchema(len(page.Images), len(page.Videos), len(page.Links)), 4000)
 	if err != nil {
 		t.Fatal(err)
 	}

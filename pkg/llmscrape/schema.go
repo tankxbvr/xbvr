@@ -44,11 +44,12 @@ type Extraction struct {
 	CoverImage      int      `json:"cover_image"`
 	GalleryImages   []int    `json:"gallery_images"`
 	Trailer         int      `json:"trailer"`
+	FollowLink      int      `json:"follow_link"`
 }
 
-// ExtractionSchema builds the JSON schema for one page. The image and trailer fields are enums of
-// that page's candidate indexes, with -1 meaning none.
-func ExtractionSchema(numImages, numVideos int) map[string]any {
+// ExtractionSchema builds the JSON schema for one page. The image, video and link fields are enums
+// of that page's candidate indexes, with -1 meaning none.
+func ExtractionSchema(numImages, numVideos, numLinks int) map[string]any {
 	// Every string and list is capped. Constrained decoding enforces the caps, so a page whose
 	// text the model would otherwise copy out at length (forum posts, long descriptions) cannot run
 	// the answer past its token budget and leave invalid, truncated JSON.
@@ -109,12 +110,14 @@ func ExtractionSchema(numImages, numVideos int) map[string]any {
 		"gallery_images": gallery,
 		"trailer": map[string]any{"type": "integer", "enum": indexEnum(numVideos, true),
 			"description": "Index of the video candidate that is this scene's trailer or preview, -1 if none."},
+		"follow_link": map[string]any{"type": "integer", "enum": indexEnum(numLinks, true),
+			"description": "When this page is a listing, category, search results, gallery or overview rather than the scene's own page, the index of the link on it that opens the page for this same scene, so it can be read next. -1 if this page is already the scene or no link clearly leads to it. Never choose a download, an unrelated scene or another site."},
 	}
 
 	// Strict structured output requires every property to be listed as required; absence is
 	// expressed with the empty values the descriptions give instead.
 	required := []string{"is_scene_page", "is_parent_page", "part_title", "page_kind", "match_confidence", "reason", "title", "studio", "site",
-		"site_scene_id", "cast", "tags", "synopsis", "released", "duration_minutes", "cover_image", "gallery_images", "trailer"}
+		"site_scene_id", "cast", "tags", "synopsis", "released", "duration_minutes", "cover_image", "gallery_images", "trailer", "follow_link"}
 	return map[string]any{
 		"type":                 "object",
 		"properties":           props,
@@ -158,6 +161,11 @@ Rules:
 - Images and videos are chosen by index from the numbered candidate lists. Never write a URL.
 - A page can describe the right scene without being a scene page (for example a performer page
   listing it); in that case is_scene_page is false.
+- A search result is sometimes an overview, gallery, profile or listing page that links to the
+  scene's own page. When the page you are shown is not the scene's page and one of its links
+  clearly leads to the scene, set follow_link to that link's index; the linked page will be read
+  next and you will be asked again. Use -1 when this page is the scene itself or no link clearly
+  leads to it. Choose at most one link and never a download or an unrelated scene.
 - Judge match_confidence on identity: the studio, performers and title must agree with the file.
   Do not rule a page out on running time: store and tube pages often list a preview's length.
   Running time is checked separately.
@@ -241,8 +249,15 @@ func BuildMessages(page *Page, file *FileInfo) []Message {
 	for i, c := range page.Videos {
 		fmt.Fprintf(&b, "[%d] %s (%s)\n", i, c.URL, c.Hint)
 	}
+	b.WriteString("\nLINK CANDIDATES\n")
+	if len(page.Links) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for i, c := range page.Links {
+		fmt.Fprintf(&b, "[%d] %s (%s)\n", i, c.URL, c.Hint)
+	}
 
-	guide := FieldGuide(ExtractionSchema(len(page.Images), len(page.Videos)))
+	guide := FieldGuide(ExtractionSchema(len(page.Images), len(page.Videos), len(page.Links)))
 	return []Message{
 		{Role: "system", Content: systemPrompt + "\n\nFields to fill:\n" + guide},
 		{Role: "user", Content: b.String()},
@@ -317,6 +332,9 @@ func ParseExtraction(raw json.RawMessage, page *Page) (*Extraction, error) {
 	}
 	if !e.IsParentPage {
 		e.PartTitle = ""
+	}
+	if e.IsScenePage || e.IsParentPage || e.FollowLink < 0 || e.FollowLink >= len(page.Links) {
+		e.FollowLink = -1
 	}
 	if !contains(pageKinds, e.PageKind) {
 		e.PageKind = KindOther
