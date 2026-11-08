@@ -40,10 +40,14 @@ func heresphereTranscodeMedia(req *restful.Request, file models.File, prefix, dn
 	if size <= 0 {
 		return nil
 	}
+	freeVRAM, _ := transcode.FreeVRAM()
 
 	var media []HeresphereMedia
 	for _, codec := range codecs {
-		plan := transcode.PlanFor(codec, opts, file.VideoWidth, file.VideoHeight, file.VideoAvgFrameRateVal)
+		plan := transcode.PlanFor(codec, opts, file.VideoWidth, file.VideoHeight, file.VideoAvgFrameRateVal, freeVRAM)
+		if plan.Unavailable {
+			continue
+		}
 		height, width := plan.Height, plan.Width
 		if height <= 0 {
 			height = file.VideoHeight

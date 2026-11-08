@@ -6,6 +6,7 @@ package transcode
 import (
 	"fmt"
 	"math"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -99,18 +100,102 @@ var capabilities = map[string]capability{
 // Plan is the resolved output for one codec: the size it will encode at, the frame rate it
 // will cap to, and any user-facing notes about the adjustments.
 type Plan struct {
-	Codec  string
-	Width  int
-	Height int
-	FPS    float64 // 0 = keep the source frame rate
-	Scale  bool
-	Notes  []string
+	Codec       string
+	Width       int
+	Height      int
+	FPS         float64 // 0 = keep the source frame rate
+	Scale       bool
+	Unavailable bool
+	Notes       []string
+}
+
+// vramNeedMiB estimates the encoder's VRAM for an output size. The figures come from
+// measurements on Blackwell: roughly 0.7 GB at 1080p, 0.7-1.1 GB at 4K, and about 1.1 GB
+// for HEVC at 8K. AV1 at 8K needs well over 1.8 GB and is not viable on a card with less
+// free memory. x264 encodes on the CPU and uses no VRAM.
+func vramNeedMiB(codec string, width, height int) int {
+	if codec == CodecX264 || width <= 0 || height <= 0 {
+		return 0
+	}
+	mp := float64(width) * float64(height) / 1e6
+	switch {
+	case height <= 1080:
+		return int(450 + mp*120)
+	case height <= 2160:
+		switch codec {
+		case CodecAV1:
+			return int(600 + mp*60)
+		case CodecHEVC:
+			return int(450 + mp*30)
+		default:
+			return int(500 + mp*55)
+		}
+	default:
+		switch codec {
+		case CodecAV1:
+			return int(900 + mp*60)
+		case CodecHEVC:
+			return int(650 + mp*15)
+		default:
+			return int(650 + mp*30)
+		}
+	}
+}
+
+const vramSafetyMiB = 256
+
+// fitsVRAM reports whether an encode of this size fits in freeVRAMMiB. A free value of 0
+// means the free memory is unknown, in which case no judgement is made.
+func fitsVRAM(codec string, width, height, freeVRAMMiB int) bool {
+	if freeVRAMMiB <= 0 {
+		return true
+	}
+	return vramNeedMiB(codec, width, height)+vramSafetyMiB <= freeVRAMMiB
+}
+
+// scaleToHeight fits width x height inside a target height, keeping aspect and even sides.
+func scaleToHeight(width, height, targetHeight int) (int, int) {
+	if height <= 0 || width <= 0 || height <= targetHeight {
+		return width, height
+	}
+	return even(int(float64(width) * float64(targetHeight) / float64(height))), even(targetHeight)
+}
+
+// FreeVRAM returns the free memory of the visible GPU with the most room and its index.
+// ffmpeg defaults to GPU 0, so the index is passed to it. Unknown or unavailable values
+// are returned as 0, 0.
+func FreeVRAM() (freeMiB, gpuIndex int) {
+	out, err := exec.Command("nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return 0, 0
+	}
+	best := -1
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Split(line, ",")
+		if len(fields) != 2 {
+			continue
+		}
+		idx, err1 := strconv.Atoi(strings.TrimSpace(fields[0]))
+		free, err2 := strconv.Atoi(strings.TrimSpace(fields[1]))
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if free > best {
+			best, gpuIndex, freeMiB = free, idx, free
+		}
+	}
+	if best < 0 {
+		return 0, 0
+	}
+	return freeMiB, gpuIndex
 }
 
 // PlanFor works out how a codec handles a source. Sources larger than the codec's limit are
-// scaled down to fit; a frame rate the codec cannot sustain is limited to 30 fps, which is
-// reported in Notes so the client can see why. srcFPS may be 0 when unknown.
-func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64) Plan {
+// scaled down to fit; if freeVRAMMiB is known and the encode would not fit, the output is
+// scaled down until it does, or marked unavailable. A frame rate the codec cannot sustain is
+// limited to 30 fps. Both adjustments are reported in Notes so the client can see why.
+// srcFPS may be 0 when unknown; freeVRAMMiB may be 0 when unknown.
+func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64, freeVRAMMiB int) Plan {
 	o := opts.normalized()
 	if !IsCodec(codec) {
 		codec = CodecH264
@@ -134,6 +219,28 @@ func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64
 				fromW, fromH, CodecLabel(codec), cap.maxWidth, cap.maxHeight))
 		}
 		width, height = even(width), even(height)
+
+		if !fitsVRAM(codec, width, height, freeVRAMMiB) {
+			originalW, originalH := width, height
+			fitted := false
+			for _, target := range []int{2160, 1440, 1080, 720} {
+				w, h := scaleToHeight(originalW, originalH, target)
+				if w == originalW && h == originalH {
+					continue
+				}
+				if fitsVRAM(codec, w, h, freeVRAMMiB) {
+					width, height = w, h
+					fitted = true
+					p.Notes = append(p.Notes, fmt.Sprintf("scaled to %dx%d to fit %d MiB free VRAM", w, h, freeVRAMMiB))
+					break
+				}
+			}
+			if !fitted {
+				p.Unavailable = true
+				p.Notes = append(p.Notes, fmt.Sprintf("not enough free VRAM for %s at this size (%d MiB free)", CodecLabel(codec), freeVRAMMiB))
+			}
+		}
+
 		p.Width, p.Height = width, height
 		p.Scale = width != srcWidth || height != srcHeight
 	}
@@ -201,7 +308,7 @@ func even(n int) int {
 // Args returns the ffmpeg arguments that stream path as fragmented MP4 on stdout, starting at
 // seekSeconds. -re paces the encode at playback speed, so a long file is not encoded ahead of
 // the player.
-func Args(ffmpegPath, path string, seekSeconds float64, opts Options, p Plan) []string {
+func Args(ffmpegPath, path string, seekSeconds float64, opts Options, p Plan, gpuIndex int) []string {
 	o := opts.normalized()
 	videoKbps := o.BitrateMbps * 1000
 
@@ -220,6 +327,9 @@ func Args(ffmpegPath, path string, seekSeconds float64, opts Options, p Plan) []
 		args = append(args, "-c:v", "av1_nvenc", "-preset", p.preset(), "-rc", "vbr", "-cq", "23")
 	default:
 		args = append(args, "-c:v", "h264_nvenc", "-preset", p.preset(), "-rc", "vbr", "-cq", "23")
+	}
+	if p.Codec != CodecX264 && gpuIndex >= 0 {
+		args = append(args, "-gpu", strconv.Itoa(gpuIndex))
 	}
 
 	args = append(args,

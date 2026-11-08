@@ -69,9 +69,15 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	}
 
 	opts := transcodeOptions()
-	plan := transcode.PlanFor(codec, opts, f.VideoWidth, f.VideoHeight, f.VideoAvgFrameRateVal)
+	freeVRAM, gpuIndex := transcode.FreeVRAM()
+	plan := transcode.PlanFor(codec, opts, f.VideoWidth, f.VideoHeight, f.VideoAvgFrameRateVal, freeVRAM)
 	if len(plan.Notes) > 0 {
 		log.Infof("transcode %d %s: %s", f.ID, codec, strings.Join(plan.Notes, "; "))
+	}
+	if plan.Unavailable {
+		log.Warnf("transcode %d %s: not enough free VRAM; refusing", f.ID, codec)
+		resp.WriteHeader(http.StatusServiceUnavailable)
+		return
 	}
 	total := opts.VirtualSize(f.VideoDuration)
 	if total <= 0 {
@@ -104,7 +110,7 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 		resp.WriteHeader(http.StatusOK)
 	}
 
-	args := transcode.Args(ffmpegBin(), f.GetPath(), seek, opts, plan)
+	args := transcode.Args(ffmpegBin(), f.GetPath(), seek, opts, plan, gpuIndex)
 	cmd := exec.CommandContext(req.Request.Context(), args[0], args[1:]...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
