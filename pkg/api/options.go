@@ -28,6 +28,7 @@ import (
 	"github.com/xbapps/xbvr/pkg/models"
 	"github.com/xbapps/xbvr/pkg/scrape"
 	"github.com/xbapps/xbvr/pkg/tasks"
+	"github.com/xbapps/xbvr/pkg/transcode"
 )
 
 type NewVolumeRequest struct {
@@ -92,31 +93,31 @@ type RequestSaveOptionsDLNA struct {
 }
 
 type RequestSaveOptionsDeoVR struct {
-	Enabled                 bool   `json:"enabled"`
-	AuthEnabled             bool   `json:"auth_enabled"`
-	Username                string `json:"username"`
-	Password                string `json:"password"`
-	RemoteEnabled           bool   `json:"remote_enabled"`
-	TrackWatchTime          bool   `json:"track_watch_time"`
-	RenderHeatmaps          bool   `json:"render_heatmaps"`
-	AllowFileDeletes        bool   `json:"allow_file_deletes"`
-	AllowRatingUpdates      bool   `json:"allow_rating_updates"`
-	AllowFavoriteUpdates    bool   `json:"allow_favorite_updates"`
-	AllowHspData            bool   `json:"allow_hsp_data"`
-	AllowTagUpdates         bool   `json:"allow_tag_updates"`
-	AllowCuepointUpdates    bool   `json:"allow_cuepoint_updates"`
-	AllowWatchlistUpdates   bool   `json:"allow_watchlist_updates"`
-	MultitrackCuepoints     bool   `json:"multitrack_cuepoints"`
-	VideoSortSeq            string `json:"video_sort_seq"`
-	ScriptSortSeq           string `json:"script_sort_seq"`
-	SubtitleSortSeq         string `json:"subtitle_sort_seq"`
-	MultitrackCastCuepoints bool   `json:"multitrack_cast_cuepoints"`
-	RetainNonHSPCuepoints   bool   `json:"retain_non_hsp_cuepoints"`
-	TranscodeEnabled        bool   `json:"transcode_enabled"`
-	TranscodeEncoder        string `json:"transcode_encoder"`
-	TranscodeBitrateMbps    int    `json:"transcode_bitrate_mbps"`
-	TranscodeAudioKbps      int    `json:"transcode_audio_kbps"`
-	TranscodeMaxHeight      int    `json:"transcode_max_height"`
+	Enabled                 bool     `json:"enabled"`
+	AuthEnabled             bool     `json:"auth_enabled"`
+	Username                string   `json:"username"`
+	Password                string   `json:"password"`
+	RemoteEnabled           bool     `json:"remote_enabled"`
+	TrackWatchTime          bool     `json:"track_watch_time"`
+	RenderHeatmaps          bool     `json:"render_heatmaps"`
+	AllowFileDeletes        bool     `json:"allow_file_deletes"`
+	AllowRatingUpdates      bool     `json:"allow_rating_updates"`
+	AllowFavoriteUpdates    bool     `json:"allow_favorite_updates"`
+	AllowHspData            bool     `json:"allow_hsp_data"`
+	AllowTagUpdates         bool     `json:"allow_tag_updates"`
+	AllowCuepointUpdates    bool     `json:"allow_cuepoint_updates"`
+	AllowWatchlistUpdates   bool     `json:"allow_watchlist_updates"`
+	MultitrackCuepoints     bool     `json:"multitrack_cuepoints"`
+	VideoSortSeq            string   `json:"video_sort_seq"`
+	ScriptSortSeq           string   `json:"script_sort_seq"`
+	SubtitleSortSeq         string   `json:"subtitle_sort_seq"`
+	MultitrackCastCuepoints bool     `json:"multitrack_cast_cuepoints"`
+	RetainNonHSPCuepoints   bool     `json:"retain_non_hsp_cuepoints"`
+	TranscodeEnabled        bool     `json:"transcode_enabled"`
+	TranscodeCodecs         []string `json:"transcode_codecs"`
+	TranscodeBitrateMbps    int      `json:"transcode_bitrate_mbps"`
+	TranscodeAudioKbps      int      `json:"transcode_audio_kbps"`
+	TranscodeMaxHeight      int      `json:"transcode_max_height"`
 }
 
 type RequestSaveOptionsPreviews struct {
@@ -615,11 +616,7 @@ func (i ConfigResource) saveOptionsDeoVR(req *restful.Request, resp *restful.Res
 	config.Config.Interfaces.Heresphere.MultitrackCastCuepoints = r.MultitrackCastCuepoints
 	config.Config.Interfaces.Heresphere.RetainNonHSPCuepoints = r.RetainNonHSPCuepoints
 	config.Config.Interfaces.Heresphere.TranscodeEnabled = r.TranscodeEnabled
-	if r.TranscodeEncoder == "x264" {
-		config.Config.Interfaces.Heresphere.TranscodeEncoder = "x264"
-	} else {
-		config.Config.Interfaces.Heresphere.TranscodeEncoder = "nvenc"
-	}
+	config.Config.Interfaces.Heresphere.TranscodeCodecs = transcode.ParseCodecs(r.TranscodeCodecs)
 	config.Config.Interfaces.Heresphere.TranscodeBitrateMbps = r.TranscodeBitrateMbps
 	config.Config.Interfaces.Heresphere.TranscodeAudioKbps = r.TranscodeAudioKbps
 	config.Config.Interfaces.Heresphere.TranscodeMaxHeight = r.TranscodeMaxHeight
