@@ -30,7 +30,7 @@ func TestCodecLabel(t *testing.T) {
 }
 
 func TestPlanScalesForH264Limit(t *testing.T) {
-	p := PlanFor(CodecH264, Options{}, 7680, 3840, 60)
+	p := PlanFor(CodecH264, Options{}, 7680, 3840, 60, 0)
 	if !p.Scale || p.Width != 4096 || p.Height != 2048 {
 		t.Errorf("H.264 plan = %dx%d scale=%v, want 4096x2048 scaled", p.Width, p.Height, p.Scale)
 	}
@@ -43,7 +43,7 @@ func TestPlanScalesForH264Limit(t *testing.T) {
 }
 
 func TestPlanKeepsEightKForHEVC(t *testing.T) {
-	p := PlanFor(CodecHEVC, Options{}, 7680, 3840, 60)
+	p := PlanFor(CodecHEVC, Options{}, 7680, 3840, 60, 0)
 	if p.Scale || p.Width != 7680 || p.Height != 3840 {
 		t.Errorf("HEVC plan = %dx%d scale=%v", p.Width, p.Height, p.Scale)
 	}
@@ -53,7 +53,7 @@ func TestPlanKeepsEightKForHEVC(t *testing.T) {
 }
 
 func TestPlanDropsToThirtyFPSWhenTooLarge(t *testing.T) {
-	p := PlanFor(CodecHEVC, Options{}, 8192, 8192, 60)
+	p := PlanFor(CodecHEVC, Options{}, 8192, 8192, 60, 0)
 	if p.FPS != 30 {
 		t.Errorf("8192x8192 at 60 fps should drop to 30, got %v", p.FPS)
 	}
@@ -63,14 +63,14 @@ func TestPlanDropsToThirtyFPSWhenTooLarge(t *testing.T) {
 }
 
 func TestPlanCapsSourceFPSAtSixty(t *testing.T) {
-	p := PlanFor(CodecAV1, Options{}, 1920, 1080, 90)
+	p := PlanFor(CodecAV1, Options{}, 1920, 1080, 90, 0)
 	if p.FPS != 60 {
 		t.Errorf("90 fps should be limited to 60, got %v", p.FPS)
 	}
 }
 
 func TestPlanHonoursHeightCap(t *testing.T) {
-	p := PlanFor(CodecH264, Options{MaxHeight: 1080}, 3840, 1920, 30)
+	p := PlanFor(CodecH264, Options{MaxHeight: 1080}, 3840, 1920, 30, 0)
 	if p.Width != 2160 || p.Height != 1080 || !p.Scale {
 		t.Errorf("height cap plan = %dx%d scale=%v, want 2160x1080", p.Width, p.Height, p.Scale)
 	}
@@ -96,8 +96,8 @@ func TestArgsCodecs(t *testing.T) {
 		CodecX264: "libx264",
 	}
 	for codec, encoder := range cases {
-		plan := PlanFor(codec, opts, 1920, 1080, 60)
-		args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 42.5, opts, plan), " ")
+		plan := PlanFor(codec, opts, 1920, 1080, 60, 0)
+		args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 42.5, opts, plan, 0), " ")
 		for _, want := range []string{"-ss 42.500", "-re", encoder, "-b:v 20000k", "-b:a 128k", "pipe:1"} {
 			if !strings.Contains(args, want) {
 				t.Errorf("%s args missing %q: %s", codec, want, args)
@@ -106,15 +106,50 @@ func TestArgsCodecs(t *testing.T) {
 	}
 }
 
+func TestPlanScalesForFreeVRAM(t *testing.T) {
+	p := PlanFor(CodecAV1, Options{}, 7680, 3840, 60, 1900)
+	if p.Unavailable {
+		t.Fatalf("4K should fit in 1900 MiB: %v", p.Notes)
+	}
+	if p.Height != 2160 || p.Width != 4320 {
+		t.Errorf("AV1 8K at 1900 MiB free should scale to 4320x2160, got %dx%d", p.Width, p.Height)
+	}
+	if !strings.Contains(strings.Join(p.Notes, " "), "free VRAM") {
+		t.Errorf("notes should explain the VRAM scaling: %v", p.Notes)
+	}
+}
+
+func TestPlanHEVC8KFitsInNineteenHundredMiB(t *testing.T) {
+	p := PlanFor(CodecHEVC, Options{}, 7680, 3840, 60, 1900)
+	if p.Unavailable || p.Scale {
+		t.Errorf("HEVC 8K should fit in 1900 MiB: %dx%d %v", p.Width, p.Height, p.Notes)
+	}
+}
+
+func TestPlanUnavailableWhenVRAMIsTooLow(t *testing.T) {
+	p := PlanFor(CodecAV1, Options{}, 7680, 3840, 60, 400)
+	if !p.Unavailable {
+		t.Errorf("400 MiB should not fit any useful AV1 stream: %dx%d %v", p.Width, p.Height, p.Notes)
+	}
+}
+
+func TestArgsSelectsGPU(t *testing.T) {
+	plan := PlanFor(CodecHEVC, Options{}, 1920, 1080, 60, 0)
+	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, plan, 1), " ")
+	if !strings.Contains(args, "-gpu 1") {
+		t.Errorf("GPU selection missing: %s", args)
+	}
+}
+
 func TestArgsScalesAndCapsFPS(t *testing.T) {
-	plan := PlanFor(CodecH264, Options{}, 7680, 3840, 60)
-	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, plan), " ")
+	plan := PlanFor(CodecH264, Options{}, 7680, 3840, 60, 0)
+	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, plan, 0), " ")
 	if !strings.Contains(args, "scale=4096:2048") {
 		t.Errorf("scale filter missing: %s", args)
 	}
 
-	plan = PlanFor(CodecHEVC, Options{}, 8192, 8192, 60)
-	args = strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, plan), " ")
+	plan = PlanFor(CodecHEVC, Options{}, 8192, 8192, 60, 0)
+	args = strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, plan, 0), " ")
 	if !strings.Contains(args, "-r 30.000") {
 		t.Errorf("frame rate cap missing: %s", args)
 	}
