@@ -112,6 +112,11 @@ type RequestSaveOptionsDeoVR struct {
 	SubtitleSortSeq         string `json:"subtitle_sort_seq"`
 	MultitrackCastCuepoints bool   `json:"multitrack_cast_cuepoints"`
 	RetainNonHSPCuepoints   bool   `json:"retain_non_hsp_cuepoints"`
+	TranscodeEnabled        bool   `json:"transcode_enabled"`
+	TranscodeEncoder        string `json:"transcode_encoder"`
+	TranscodeBitrateMbps    int    `json:"transcode_bitrate_mbps"`
+	TranscodeAudioKbps      int    `json:"transcode_audio_kbps"`
+	TranscodeMaxHeight      int    `json:"transcode_max_height"`
 }
 
 type RequestSaveOptionsPreviews struct {
@@ -609,6 +614,15 @@ func (i ConfigResource) saveOptionsDeoVR(req *restful.Request, resp *restful.Res
 	config.Config.Interfaces.Players.SubtitleSortSeq = r.SubtitleSortSeq
 	config.Config.Interfaces.Heresphere.MultitrackCastCuepoints = r.MultitrackCastCuepoints
 	config.Config.Interfaces.Heresphere.RetainNonHSPCuepoints = r.RetainNonHSPCuepoints
+	config.Config.Interfaces.Heresphere.TranscodeEnabled = r.TranscodeEnabled
+	if r.TranscodeEncoder == "x264" {
+		config.Config.Interfaces.Heresphere.TranscodeEncoder = "x264"
+	} else {
+		config.Config.Interfaces.Heresphere.TranscodeEncoder = "nvenc"
+	}
+	config.Config.Interfaces.Heresphere.TranscodeBitrateMbps = r.TranscodeBitrateMbps
+	config.Config.Interfaces.Heresphere.TranscodeAudioKbps = r.TranscodeAudioKbps
+	config.Config.Interfaces.Heresphere.TranscodeMaxHeight = r.TranscodeMaxHeight
 	if r.Password != config.Config.Interfaces.DeoVR.Password && r.Password != "" {
 		hash, _ := bcrypt.GenerateFromPassword([]byte(r.Password), bcrypt.DefaultCost)
 		config.Config.Interfaces.DeoVR.Password = string(hash)
