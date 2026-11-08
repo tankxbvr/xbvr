@@ -151,6 +151,7 @@ func organizeCron() {
 			CastGender:     c.CastGender,
 			SymlinkByActor: c.SymlinkByActor,
 			ActorFolder:    c.ActorFolder,
+			NameTemplate:   c.NameTemplate,
 		})
 	}
 	log.Println(fmt.Sprintf("Next Organize Task at %v", cronInstance.Entry(organizeTask).Next))
