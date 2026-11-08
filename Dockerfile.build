@@ -37,8 +37,7 @@ RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
         --enable-nvenc --enable-ffnvcodec \
         --enable-static --disable-shared \
         --extra-cflags="-I/usr/local/include" \
-        --extra-ldflags="-L/usr/local/lib -static" \
-        --extra-libs="-lm -lpthread -ldl" \
+        --extra-ldflags="-L/usr/local/lib" \
     && make -j"$(nproc)" \
     && make install \
     && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q h264_nvenc \
@@ -68,8 +67,9 @@ RUN CGO_ENABLED=1 go build -tags=json1 \
 ### Stage 4 — runtime (drop-in for the official image)
 FROM debian:bookworm-slim
 # python3 is used by the deploy checks and helper scripts; ffmpeg and ffprobe come from
-# the NVENC build so transcoding has H.264, HEVC and AV1 hardware encoders.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
+# the NVENC build so transcoding has H.264, HEVC and AV1 hardware encoders. ffmpeg is
+# dynamically linked so its dlopen of the NVIDIA driver libraries works.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates libx264-164 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
