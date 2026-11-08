@@ -59,7 +59,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /src/ui/dist ./ui/dist
-ARG VERSION=0.4.40.8
+ARG VERSION=0.4.40.9
 RUN CGO_ENABLED=1 go build -tags=json1 \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /xbvr .
@@ -69,7 +69,7 @@ FROM debian:bookworm-slim
 # python3 is used by the deploy checks and helper scripts; ffmpeg and ffprobe come from
 # the NVENC build so transcoding has H.264, HEVC and AV1 hardware encoders. ffmpeg is
 # dynamically linked so its dlopen of the NVIDIA driver libraries works.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates libx264-164 \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates iproute2 libx264-164 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
