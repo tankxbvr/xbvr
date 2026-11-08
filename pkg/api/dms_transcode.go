@@ -110,6 +110,8 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	if playDuration <= 0 {
 		playDuration = f.VideoDuration
 	}
+	log.Infof("transcode request %d %s: range=%q start=%q seek=%.3f total=%d source=%.3f",
+		f.ID, codec, req.Request.Header.Get("Range"), req.QueryParameter("start"), seek, total, f.VideoDuration)
 
 	var limit int64
 	h := resp.Header()
