@@ -92,8 +92,8 @@ type capability struct {
 
 var capabilities = map[string]capability{
 	CodecH264: {4096, 4096, 2.0e9},
-	CodecHEVC: {8192, 8192, 2.0e9},
-	CodecAV1:  {8192, 8192, 1.9e9},
+	CodecHEVC: {8192, 8192, 2.2e9},
+	CodecAV1:  {8192, 8192, 1.4e9},
 	CodecX264: {8192, 8192, 0.9e9},
 }
 
