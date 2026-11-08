@@ -254,6 +254,37 @@
               </b-tooltip>
             </div>
           </div>
+          <hr/>
+          <h4>Live transcode</h4>
+          <p class="help">
+            Adds a second stream to each video, encoded on the fly with ffmpeg. Its size in
+            HereSphere is an estimate for the configured bitrate, since nothing is written to disk.
+            Requires an NVIDIA GPU for NVENC, or use x264.
+          </p>
+          <b-field label="Enable live transcode">
+            <b-switch v-model="transcodeEnabled">Enabled</b-switch>
+          </b-field>
+          <div class="columns" v-if="transcodeEnabled">
+            <div class="column">
+              <b-field label="Encoder">
+                <b-select v-model="transcodeEncoder" expanded>
+                  <option value="nvenc">NVENC (NVIDIA GPU)</option>
+                  <option value="x264">x264 (CPU)</option>
+                </b-select>
+              </b-field>
+              <b-field label="Video bitrate (Mbps)">
+                <b-numberinput v-model="transcodeBitrateMbps" :min="1" :max="200" controls-position="compact"/>
+              </b-field>
+            </div>
+            <div class="column">
+              <b-field label="Audio bitrate (kbps)">
+                <b-numberinput v-model="transcodeAudioKbps" :min="32" :max="512" :step="32" controls-position="compact"/>
+              </b-field>
+              <b-field label="Maximum height (0 = source)">
+                <b-numberinput v-model="transcodeMaxHeight" :min="0" :max="4320" :step="120" controls-position="compact"/>
+              </b-field>
+            </div>
+          </div>
       </div>
       <b-field>
         <b-button type="is-primary" @click="save">Save and apply changes</b-button>
@@ -511,11 +542,51 @@ export default {
       }
     },
     retainNonHSPCuepoints: {
-      get () {        
+      get () {
         return this.$store.state.optionsDeoVR.heresphere.retain_non_hsp_cuepoints
       },
       set (value) {
         this.$store.state.optionsDeoVR.heresphere.retain_non_hsp_cuepoints = value
+      }
+    },
+    transcodeEnabled: {
+      get () {
+        return this.$store.state.optionsDeoVR.heresphere.transcode_enabled
+      },
+      set (value) {
+        this.$store.state.optionsDeoVR.heresphere.transcode_enabled = value
+      }
+    },
+    transcodeEncoder: {
+      get () {
+        return this.$store.state.optionsDeoVR.heresphere.transcode_encoder
+      },
+      set (value) {
+        this.$store.state.optionsDeoVR.heresphere.transcode_encoder = value
+      }
+    },
+    transcodeBitrateMbps: {
+      get () {
+        return this.$store.state.optionsDeoVR.heresphere.transcode_bitrate_mbps
+      },
+      set (value) {
+        this.$store.state.optionsDeoVR.heresphere.transcode_bitrate_mbps = value
+      }
+    },
+    transcodeAudioKbps: {
+      get () {
+        return this.$store.state.optionsDeoVR.heresphere.transcode_audio_kbps
+      },
+      set (value) {
+        this.$store.state.optionsDeoVR.heresphere.transcode_audio_kbps = value
+      }
+    },
+    transcodeMaxHeight: {
+      get () {
+        return this.$store.state.optionsDeoVR.heresphere.transcode_max_height
+      },
+      set (value) {
+        this.$store.state.optionsDeoVR.heresphere.transcode_max_height = value
       }
     },
     isLoading: function () {
