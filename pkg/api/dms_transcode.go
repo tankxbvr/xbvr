@@ -48,7 +48,31 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	setDeoPlayerHost(req)
 	session.TrackSessionFromFile(f, doNotTrack)
 
+	enabled := transcode.ParseCodecs(config.Config.Interfaces.Heresphere.TranscodeCodecs)
+	if len(enabled) == 0 {
+		enabled = []string{transcode.CodecH264}
+	}
+	codec := strings.ToLower(strings.TrimSpace(req.QueryParameter("codec")))
+	if codec == "" {
+		codec = enabled[0]
+	}
+	allowed := false
+	for _, c := range enabled {
+		if c == codec {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		resp.WriteHeader(http.StatusNotFound)
+		return
+	}
+
 	opts := transcodeOptions()
+	plan := transcode.PlanFor(codec, opts, f.VideoWidth, f.VideoHeight, f.VideoAvgFrameRateVal)
+	if len(plan.Notes) > 0 {
+		log.Infof("transcode %d %s: %s", f.ID, codec, strings.Join(plan.Notes, "; "))
+	}
 	total := opts.VirtualSize(f.VideoDuration)
 	if total <= 0 {
 		total = f.Size
@@ -80,7 +104,7 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 		resp.WriteHeader(http.StatusOK)
 	}
 
-	args := transcode.Args(ffmpegBin(), f.GetPath(), seek, opts, f.VideoHeight, f.VideoWidth)
+	args := transcode.Args(ffmpegBin(), f.GetPath(), seek, opts, plan)
 	cmd := exec.CommandContext(req.Request.Context(), args[0], args[1:]...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -107,14 +131,13 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	}
 }
 
-// ffmpegBin prefers the bundled binary and falls back to PATH, where a distribution ffmpeg is
-// usually the build that carries GPU encoders.
+// ffmpegBin prefers an ffmpeg on PATH, which in the container is the build made with NVENC and
+// all the encoders; it falls back to the bundled download when there is none.
 func ffmpegBin() string {
-	bundled := tasks.GetBinPath("ffmpeg")
-	if _, err := os.Stat(bundled); err == nil {
-		return bundled
+	if path, err := exec.LookPath("ffmpeg"); err == nil {
+		return path
 	}
-	return "ffmpeg"
+	return tasks.GetBinPath("ffmpeg")
 }
 
 // flushWriter pushes each chunk to the client so playback starts without a server buffer delay.

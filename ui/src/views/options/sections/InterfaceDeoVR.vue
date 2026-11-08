@@ -257,19 +257,23 @@
           <hr/>
           <h4>Live transcode</h4>
           <p class="help">
-            Adds a second stream to each video, encoded on the fly with ffmpeg. Its size in
-            HereSphere is an estimate for the configured bitrate, since nothing is written to disk.
-            Requires an NVIDIA GPU for NVENC, or use x264.
+            Adds one stream per selected codec to each video, encoded on the fly with ffmpeg.
+            Its size in HereSphere is an estimate for the configured bitrate, since nothing is
+            written to disk. H.264 tops out at 4096x4096, so larger sources are scaled down;
+            HEVC and AV1 handle up to 8192x8192. Very large frames may be limited to 30 fps,
+            which is shown in the stream name.
           </p>
           <b-field label="Enable live transcode">
             <b-switch v-model="transcodeEnabled">Enabled</b-switch>
           </b-field>
           <div class="columns" v-if="transcodeEnabled">
             <div class="column">
-              <b-field label="Encoder">
-                <b-select v-model="transcodeEncoder" expanded>
-                  <option value="nvenc">NVENC (NVIDIA GPU)</option>
-                  <option value="x264">x264 (CPU)</option>
+              <b-field label="Codecs offered to the headset">
+                <b-select v-model="transcodeCodecs" multiple expanded>
+                  <option value="h264">H.264 (NVENC)</option>
+                  <option value="hevc">HEVC / H.265 (NVENC)</option>
+                  <option value="av1">AV1 (NVENC)</option>
+                  <option value="x264">H.264 (x264, CPU)</option>
                 </b-select>
               </b-field>
               <b-field label="Video bitrate (Mbps)">
@@ -557,12 +561,12 @@ export default {
         this.$store.state.optionsDeoVR.heresphere.transcode_enabled = value
       }
     },
-    transcodeEncoder: {
+    transcodeCodecs: {
       get () {
-        return this.$store.state.optionsDeoVR.heresphere.transcode_encoder
+        return this.$store.state.optionsDeoVR.heresphere.transcode_codecs
       },
       set (value) {
-        this.$store.state.optionsDeoVR.heresphere.transcode_encoder = value
+        this.$store.state.optionsDeoVR.heresphere.transcode_codecs = value
       }
     },
     transcodeBitrateMbps: {

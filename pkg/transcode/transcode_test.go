@@ -5,6 +5,77 @@ import (
 	"testing"
 )
 
+func TestParseCodecs(t *testing.T) {
+	got := ParseCodecs([]string{"H264", "hevc", "av1", "h264", "bogus", ""})
+	if strings.Join(got, ",") != "h264,hevc,av1" {
+		t.Errorf("ParseCodecs = %v", got)
+	}
+	if got := ParseCodecs(nil); len(got) != 0 {
+		t.Errorf("empty list = %v", got)
+	}
+}
+
+func TestCodecLabel(t *testing.T) {
+	cases := map[string]string{
+		CodecH264: "H.264 (NVENC)",
+		CodecHEVC: "HEVC (NVENC)",
+		CodecAV1:  "AV1 (NVENC)",
+		CodecX264: "H.264 (x264)",
+	}
+	for codec, want := range cases {
+		if got := CodecLabel(codec); got != want {
+			t.Errorf("CodecLabel(%q) = %q, want %q", codec, got, want)
+		}
+	}
+}
+
+func TestPlanScalesForH264Limit(t *testing.T) {
+	p := PlanFor(CodecH264, Options{}, 7680, 3840, 60)
+	if !p.Scale || p.Width != 4096 || p.Height != 2048 {
+		t.Errorf("H.264 plan = %dx%d scale=%v, want 4096x2048 scaled", p.Width, p.Height, p.Scale)
+	}
+	if p.FPS != 0 {
+		t.Errorf("60 fps should be kept after scaling, got %v", p.FPS)
+	}
+	if len(p.Notes) == 0 || !strings.Contains(strings.Join(p.Notes, " "), "scaled") {
+		t.Errorf("notes should say the source was scaled: %v", p.Notes)
+	}
+}
+
+func TestPlanKeepsEightKForHEVC(t *testing.T) {
+	p := PlanFor(CodecHEVC, Options{}, 7680, 3840, 60)
+	if p.Scale || p.Width != 7680 || p.Height != 3840 {
+		t.Errorf("HEVC plan = %dx%d scale=%v", p.Width, p.Height, p.Scale)
+	}
+	if p.FPS != 0 {
+		t.Errorf("HEVC should keep 60 fps at 7680x3840, got %v", p.FPS)
+	}
+}
+
+func TestPlanDropsToThirtyFPSWhenTooLarge(t *testing.T) {
+	p := PlanFor(CodecHEVC, Options{}, 8192, 8192, 60)
+	if p.FPS != 30 {
+		t.Errorf("8192x8192 at 60 fps should drop to 30, got %v", p.FPS)
+	}
+	if !strings.Contains(strings.Join(p.Notes, " "), "using 30 fps") {
+		t.Errorf("notes should explain the frame rate cap: %v", p.Notes)
+	}
+}
+
+func TestPlanCapsSourceFPSAtSixty(t *testing.T) {
+	p := PlanFor(CodecAV1, Options{}, 1920, 1080, 90)
+	if p.FPS != 60 {
+		t.Errorf("90 fps should be limited to 60, got %v", p.FPS)
+	}
+}
+
+func TestPlanHonoursHeightCap(t *testing.T) {
+	p := PlanFor(CodecH264, Options{MaxHeight: 1080}, 3840, 1920, 30)
+	if p.Width != 2160 || p.Height != 1080 || !p.Scale {
+		t.Errorf("height cap plan = %dx%d scale=%v, want 2160x1080", p.Width, p.Height, p.Scale)
+	}
+}
+
 func TestVirtualSize(t *testing.T) {
 	o := Options{BitrateMbps: 20, AudioKbps: 128}
 	// 60 s at 20 Mbps + 128 kbps = 150,960,000 bytes.
@@ -16,42 +87,38 @@ func TestVirtualSize(t *testing.T) {
 	}
 }
 
-func TestDimensions(t *testing.T) {
-	o := Options{MaxHeight: 1080}
-	h, w := o.Dimensions(1920, 3840)
-	if h != 1080 || w != 2160 {
-		t.Errorf("Dimensions = %dx%d, want 1080x2160", h, w)
+func TestArgsCodecs(t *testing.T) {
+	opts := Options{BitrateMbps: 20, AudioKbps: 128}
+	cases := map[string]string{
+		CodecH264: "h264_nvenc",
+		CodecHEVC: "hevc_nvenc",
+		CodecAV1:  "av1_nvenc",
+		CodecX264: "libx264",
 	}
-
-	o = Options{}
-	if h, w := o.Dimensions(1921, 3841); h != 1920 || w != 3840 {
-		t.Errorf("dimensions should be even, got %dx%d", h, w)
-	}
-
-	o = Options{MaxHeight: 2160}
-	if h, w := o.Dimensions(1920, 3840); h != 1920 || w != 3840 {
-		t.Errorf("a cap above the source must not scale, got %dx%d", h, w)
-	}
-}
-
-func TestArgsNVENC(t *testing.T) {
-	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 42.5, Options{BitrateMbps: 20, AudioKbps: 128}, 1920, 3840), " ")
-	for _, want := range []string{"-ss 42.500", "-re", "h264_nvenc", "-b:v 20000k", "-b:a 128k", "+frag_keyframe+empty_moov+default_base_moof", "pipe:1"} {
-		if !strings.Contains(args, want) {
-			t.Errorf("args missing %q: %s", want, args)
+	for codec, encoder := range cases {
+		plan := PlanFor(codec, opts, 1920, 1080, 60)
+		args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 42.5, opts, plan), " ")
+		for _, want := range []string{"-ss 42.500", "-re", encoder, "-b:v 20000k", "-b:a 128k", "pipe:1"} {
+			if !strings.Contains(args, want) {
+				t.Errorf("%s args missing %q: %s", codec, want, args)
+			}
 		}
 	}
 }
 
-func TestArgsX264Scales(t *testing.T) {
-	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{Encoder: "x264", MaxHeight: 1080}, 1920, 3840), " ")
-	if !strings.Contains(args, "libx264") {
-		t.Errorf("x264 encoder not selected: %s", args)
-	}
-	if !strings.Contains(args, "scale=2160:1080") {
+func TestArgsScalesAndCapsFPS(t *testing.T) {
+	plan := PlanFor(CodecH264, Options{}, 7680, 3840, 60)
+	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, plan), " ")
+	if !strings.Contains(args, "scale=4096:2048") {
 		t.Errorf("scale filter missing: %s", args)
 	}
-	if strings.Contains(args, "-ss") {
-		t.Errorf("no seek was requested: %s", args)
+
+	plan = PlanFor(CodecHEVC, Options{}, 8192, 8192, 60)
+	args = strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, plan), " ")
+	if !strings.Contains(args, "-r 30.000") {
+		t.Errorf("frame rate cap missing: %s", args)
+	}
+	if strings.Contains(args, "scale=") {
+		t.Errorf("HEVC should not scale 8K: %s", args)
 	}
 }
