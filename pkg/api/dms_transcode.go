@@ -86,18 +86,38 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 
 	start, end, hasRange := parseByteRange(req.Request.Header.Get("Range"), total)
 	seek := 0.0
+	if hasRange && total > 0 && f.VideoDuration > 0 {
+		seek = f.VideoDuration * float64(start) / float64(total)
+		if seek >= f.VideoDuration {
+			seek = f.VideoDuration - 0.1
+		}
+	}
+	// A client may ask for a new encode from a time instead of a byte range. HereSphere
+	// appends start=<seconds> when it seeks a server-side transcode.
+	if raw := req.QueryParameter("start"); raw != "" {
+		if s, err := strconv.ParseFloat(raw, 64); err == nil && s >= 0 {
+			seek = s
+			hasRange = false
+			if seek >= f.VideoDuration {
+				seek = f.VideoDuration - 0.1
+			}
+		}
+	}
+	if seek < 0 {
+		seek = 0
+	}
+	playDuration := f.VideoDuration - seek
+	if playDuration <= 0 {
+		playDuration = f.VideoDuration
+	}
+
 	var limit int64
 	h := resp.Header()
 	h.Set("Content-Type", "video/mp4")
 	h.Set("Accept-Ranges", "bytes")
 	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Duration", strconv.FormatFloat(playDuration, 'f', 3, 64))
 	if hasRange {
-		if total > 0 && f.VideoDuration > 0 {
-			seek = f.VideoDuration * float64(start) / float64(total)
-			if seek >= f.VideoDuration {
-				seek = f.VideoDuration - 0.1
-			}
-		}
 		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
 		// An open-ended range runs to the end of the stream; a bounded one stops after the
 		// requested bytes. The virtual size maps a byte offset to an approximate time.
@@ -124,9 +144,25 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 		return
 	}
 
+	// ffmpeg's fragmented MP4 header has a zero duration, so players treat it as a live
+	// stream with no length. Write the known length into the header before streaming it.
+	header, headerErr := transcode.ReadMP4Header(stdout, playDuration)
+	if headerErr != nil {
+		log.Warnf("transcode %d: mp4 header: %v", f.ID, headerErr)
+	}
 	writer := &flushWriter{w: resp.ResponseWriter}
+	written := int64(0)
+	if limit > 0 && int64(len(header)) > limit {
+		header = header[:limit]
+	}
+	if len(header) > 0 {
+		n, _ := writer.Write(header)
+		written = int64(n)
+	}
 	if limit > 0 {
-		io.CopyN(writer, stdout, limit)
+		if remaining := limit - written; remaining > 0 {
+			io.CopyN(writer, stdout, remaining)
+		}
 		// The rest of the encode is no longer wanted; stop ffmpeg rather than block on it.
 		cmd.Process.Kill()
 	} else {
