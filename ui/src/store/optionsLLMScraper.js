@@ -14,6 +14,7 @@ const state = {
     resultsPerFile: 5,
     minConfidence: 0.5,
     concurrency: 2,
+    maxFollowRounds: 2,
     skipDownloadSites: true,
     blockedDomains: '',
     allowPrivateNetworks: false

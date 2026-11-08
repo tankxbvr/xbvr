@@ -173,6 +173,43 @@ func TestIsExpiringURL(t *testing.T) {
 	}
 }
 
+func TestExtractPageLinks(t *testing.T) {
+	u, _ := url.Parse("https://example.com/studio/overview")
+	html := `<html><body>
+		<header><a href="/login">Sign in</a></header>
+		<nav><a href="/scenes">All scenes</a></nav>
+		<main>
+			<a href="/scene/one"><img alt="Scene One"></a>
+			<a href="https://other.example/scene/two">Scene Two</a>
+			<a href="/trailers/preview.mp4">Trailer</a>
+			<a href="/logo.png">Logo</a>
+		</main>
+	</body></html>`
+	p, err := ExtractPage(u, html, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range p.Links {
+		got = append(got, c.URL)
+	}
+	want := []string{"https://example.com/scene/one", "https://other.example/scene/two"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("links = %v, want %v", got, want)
+	}
+	if len(p.Links) == 2 {
+		if p.Links[0].Hint != "Scene One" {
+			t.Errorf("image-only link hint = %q, want the image alt text", p.Links[0].Hint)
+		}
+		if p.Links[1].Hint != "Scene Two" {
+			t.Errorf("link hint = %q", p.Links[1].Hint)
+		}
+	}
+	if len(p.Videos) != 1 || p.Videos[0].URL != "https://example.com/trailers/preview.mp4" {
+		t.Errorf("the trailer link belongs in the video candidates, got %+v", p.Videos)
+	}
+}
+
 func TestExtractPageDropsExpiringCandidates(t *testing.T) {
 	u, _ := url.Parse("https://example.com/scene")
 	html := `<html><head><meta property="og:image" content="https://c/cover.jpg?token=abc&expires=9">

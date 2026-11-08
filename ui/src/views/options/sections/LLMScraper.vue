@@ -74,6 +74,10 @@
             <b-field :label="$t('Pages read at once')" label-position="on-border">
               <b-numberinput v-model="concurrency" :min="1" :max="8" controls-position="compact"/>
             </b-field>
+            <b-field :label="$t('Follow-up rounds')" label-position="on-border"
+                     message="How many links from overview or listing pages to follow before judging the last page read (0-5).">
+              <b-numberinput v-model="maxFollowRounds" :min="0" :max="5" controls-position="compact"/>
+            </b-field>
           </b-field>
           <b-field :label="$t('Highlight drafts from confidence')" label-position="on-border">
             <b-slider v-model="minConfidence" :min="0" :max="1" :step="0.05" :custom-formatter="v => Math.round(v * 100) + '%'"></b-slider>
@@ -198,6 +202,7 @@ export default {
     resultsPerFile: field('resultsPerFile'),
     minConfidence: field('minConfidence'),
     concurrency: field('concurrency'),
+    maxFollowRounds: field('maxFollowRounds'),
     skipDownloadSites: field('skipDownloadSites'),
     blockedDomains: field('blockedDomains'),
     allowPrivateNetworks: field('allowPrivateNetworks')

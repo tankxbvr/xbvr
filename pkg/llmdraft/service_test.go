@@ -6,10 +6,14 @@ package llmdraft
 //	XBVR_APPDIR=$(mktemp -d) go test ./pkg/llmdraft/
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xbapps/xbvr/pkg/llmscrape"
 	"github.com/xbapps/xbvr/pkg/models"
@@ -250,5 +254,94 @@ func TestLearnedDomainsNeedTwoSightingsAndCanBeAllowed(t *testing.T) {
 	}
 	if !DomainBlocked("https://cdn.twice.com/x", got) {
 		t.Error("subdomains of a learned domain should be skipped too")
+	}
+}
+
+func TestScrapePageFollowsOverviewLink(t *testing.T) {
+	const detailPage = `<html><head><title>Sweet Pink Bunny</title></head><body>
+		<p>Cleo Vega in Sweet Pink Bunny, 40 minutes.</p></body></html>`
+	overviewPage := `<html><body>
+		<a href="/scene/sweet-pink-bunny">Sweet Pink Bunny with Cleo Vega</a>
+	</body></html>`
+
+	var detailFetches int
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if r.URL.Path == "/scene/sweet-pink-bunny" {
+			detailFetches++
+			w.Write([]byte(detailPage))
+			return
+		}
+		w.Write([]byte(overviewPage))
+	}))
+	defer site.Close()
+
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var answer string
+		if len(req.Messages) > 0 && strings.Contains(req.Messages[len(req.Messages)-1].Content, "url: "+site.URL+"/scene/sweet-pink-bunny\n") {
+			answer = `{"is_scene_page":true,"is_parent_page":false,"part_title":"","page_kind":"official_studio",
+				"match_confidence":0.9,"reason":"title and performer match","title":"Sweet Pink Bunny",
+				"studio":"ExampleVR","site":"ExampleVR","site_scene_id":"sweet-pink-bunny",
+				"cast":["Cleo Vega"],"tags":[],"synopsis":"","released":"2025-03-03","duration_minutes":40,
+				"cover_image":-1,"gallery_images":[],"trailer":-1,"follow_link":-1}`
+		} else {
+			answer = `{"is_scene_page":false,"is_parent_page":false,"part_title":"","page_kind":"store_or_aggregator",
+				"match_confidence":0.4,"reason":"an overview listing scenes","title":"","studio":"","site":"",
+				"site_scene_id":"","cast":[],"tags":[],"synopsis":"","released":"","duration_minutes":0,
+				"cover_image":-1,"gallery_images":[],"trailer":-1,"follow_link":0}`
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{
+				"message":       map[string]any{"content": answer},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer llmServer.Close()
+
+	llm, err := llmscrape.NewClient(llmscrape.LLMConfig{BaseURL: llmServer.URL, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{
+		llm:      llm,
+		fetcher:  llmscrape.NewFetcher("test", true, 5*time.Second),
+		settings: Settings{MaxPageChars: 5000, MaxFollowRounds: 2},
+	}
+	res := s.scrapePage(context.Background(), site.URL+"/overview", 7,
+		&llmscrape.FileInfo{Filename: "sweet-pink-bunny-cleo-vega.mp4"}, "sweet pink bunny", false)
+
+	if res.Error != "" {
+		t.Fatalf("error: %s", res.Error)
+	}
+	if res.Draft == nil {
+		t.Fatalf("no draft was proposed (skipped: %s)", res.Skipped)
+	}
+	if detailFetches != 1 {
+		t.Fatalf("detail page fetched %d times, want 1", detailFetches)
+	}
+	wantURL := site.URL + "/scene/sweet-pink-bunny"
+	if res.URL != wantURL || res.Draft.SourceURL != wantURL {
+		t.Errorf("result URL = %q, draft source = %q; want the followed page %q", res.URL, res.Draft.SourceURL, wantURL)
+	}
+	scene, err := res.Draft.Scene()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scene.HomepageURL != wantURL {
+		t.Errorf("homepage = %q, want %q", scene.HomepageURL, wantURL)
+	}
+	if scene.Title != "Sweet Pink Bunny" {
+		t.Errorf("title = %q", scene.Title)
 	}
 }

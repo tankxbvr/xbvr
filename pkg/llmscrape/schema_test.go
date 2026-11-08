@@ -2,12 +2,13 @@ package llmscrape
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
 
 func TestExtractionSchemaShape(t *testing.T) {
-	s := ExtractionSchema(3, 1)
+	s := ExtractionSchema(3, 1, 2)
 	props := s["properties"].(map[string]any)
 	required := s["required"].([]string)
 	if len(required) != len(props) {
@@ -30,6 +31,10 @@ func TestExtractionSchemaShape(t *testing.T) {
 	if len(trailer) != 2 {
 		t.Errorf("trailer enum = %v, want [-1 0]", trailer)
 	}
+	follow := props["follow_link"].(map[string]any)["enum"].([]any)
+	if len(follow) != 3 || follow[0] != -1 || follow[2] != 1 {
+		t.Errorf("follow_link enum = %v, want [-1 0 1]", follow)
+	}
 
 	// The schema has to survive JSON encoding to be sent to the server.
 	if _, err := json.Marshal(s); err != nil {
@@ -38,13 +43,16 @@ func TestExtractionSchemaShape(t *testing.T) {
 }
 
 func TestExtractionSchemaNoCandidates(t *testing.T) {
-	s := ExtractionSchema(0, 0)
+	s := ExtractionSchema(0, 0, 0)
 	props := s["properties"].(map[string]any)
 	if e := props["cover_image"].(map[string]any)["enum"].([]any); len(e) != 1 || e[0] != -1 {
 		t.Errorf("with no images the only cover choice is -1, got %v", e)
 	}
 	if props["gallery_images"].(map[string]any)["maxItems"] != 0 {
 		t.Error("with no images the gallery must be empty")
+	}
+	if e := props["follow_link"].(map[string]any)["enum"].([]any); len(e) != 1 || e[0] != -1 {
+		t.Errorf("with no links the only follow choice is -1, got %v", e)
 	}
 }
 
@@ -267,7 +275,7 @@ func TestParentPageFields(t *testing.T) {
 }
 
 func TestExtractionSchemaCapsEveryStringAndList(t *testing.T) {
-	props := ExtractionSchema(3, 1)["properties"].(map[string]any)
+	props := ExtractionSchema(3, 1, 2)["properties"].(map[string]any)
 	for name, v := range props {
 		p := v.(map[string]any)
 		switch p["type"] {
@@ -279,6 +287,36 @@ func TestExtractionSchemaCapsEveryStringAndList(t *testing.T) {
 			if _, ok := p["maxItems"]; !ok {
 				t.Errorf("%s: list without maxItems", name)
 			}
+		}
+	}
+}
+
+func TestParseExtractionFollowLink(t *testing.T) {
+	page := &Page{Links: []Candidate{{URL: "https://example.com/one"}, {URL: "https://example.com/two"}}}
+	raw := func(scene, parent bool, follow int) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"is_scene_page": %v, "is_parent_page": %v, "follow_link": %d}`, scene, parent, follow))
+	}
+	cases := []struct {
+		name   string
+		scene  bool
+		parent bool
+		follow int
+		want   int
+	}{
+		{"overview page points at the scene", false, false, 1, 1},
+		{"no link chosen", false, false, -1, -1},
+		{"link index out of range", false, false, 9, -1},
+		{"negative index", false, false, -4, -1},
+		{"scene page never follows", true, false, 0, -1},
+		{"parent page never follows", false, true, 0, -1},
+	}
+	for _, c := range cases {
+		e, err := ParseExtraction(raw(c.scene, c.parent, c.follow), page)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if e.FollowLink != c.want {
+			t.Errorf("%s: FollowLink = %d, want %d", c.name, e.FollowLink, c.want)
 		}
 	}
 }

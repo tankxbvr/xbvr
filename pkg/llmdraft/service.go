@@ -29,6 +29,7 @@ type Settings struct {
 	ResultsPerFile    int
 	MinConfidence     float64
 	Concurrency       int
+	MaxFollowRounds   int // links to follow from overview pages before giving up
 	SkipDownloadSites bool
 	BlockedDomains    []string
 }
@@ -67,6 +68,7 @@ func NewService(userAgent string) (*Service, error) {
 			ResultsPerFile:    clampInt(c.ResultsPerFile, 1, 20, 5),
 			MinConfidence:     c.MinConfidence,
 			Concurrency:       clampInt(c.Concurrency, 1, 8, 2),
+			MaxFollowRounds:   clampRounds(c.MaxFollowRounds),
 			SkipDownloadSites: c.SkipDownloadSites,
 			BlockedDomains:    ParseDomains(c.BlockedDomains),
 		},
@@ -86,6 +88,17 @@ func clampInt(v, lo, hi, def int) int {
 	}
 	if v > hi {
 		return hi
+	}
+	return v
+}
+
+// clampRounds bounds the follow-up hops. Zero is a valid setting (never follow a link).
+func clampRounds(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 5 {
+		return 5
 	}
 	return v
 }
@@ -138,7 +151,9 @@ func (s *Service) ScrapeURL(ctx context.Context, rawURL string, fileID uint, fil
 	return res
 }
 
-// scrapePage builds a draft from a page without saving it.
+// scrapePage builds a draft from a page without saving it. When the page is an overview or
+// listing rather than the scene itself, its extraction can point at a link to the scene's own
+// page; that page is fetched and read instead, up to Settings.MaxFollowRounds times.
 func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, file *llmscrape.FileInfo, query string, keepAny bool) ScrapeResult {
 	res := ScrapeResult{URL: rawURL}
 	if DomainBlocked(rawURL, s.settings.BlockedDomains) {
@@ -146,28 +161,45 @@ func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, fi
 		return res
 	}
 
-	page, err := s.fetcher.Fetch(ctx, rawURL, s.settings.MaxPageChars)
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
+	current := rawURL
+	visited := map[string]bool{}
+	var page *llmscrape.Page
+	var ext *llmscrape.Extraction
+	for round := 0; ; round++ {
+		visited[current] = true
+		p, err := s.fetcher.Fetch(ctx, current, s.settings.MaxPageChars)
+		if err != nil {
+			res.Error = err.Error()
+			return res
+		}
+		raw, err := s.llm.Complete(ctx, llmscrape.BuildMessages(p, file), "xbvr_scene",
+			llmscrape.ExtractionSchema(len(p.Images), len(p.Videos), len(p.Links)), 4000)
+		if err != nil {
+			res.Error = err.Error()
+			return res
+		}
+		e, err := llmscrape.ParseExtraction(raw, p)
+		if err != nil {
+			res.Error = err.Error()
+			return res
+		}
+		llmscrape.ApplyDurationCheck(e, file)
+		llmscrape.ApplyNameCheck(e, file)
+		if e.PageKind == llmscrape.KindDownload {
+			RecordDownloadSite(p.URL)
+		}
+		page, ext = p, e
 
-	raw, err := s.llm.Complete(ctx, llmscrape.BuildMessages(page, file), "xbvr_scene",
-		llmscrape.ExtractionSchema(len(page.Images), len(page.Videos)), 4000)
-	if err != nil {
-		res.Error = err.Error()
-		return res
+		if round >= s.settings.MaxFollowRounds || e.FollowLink < 0 || e.FollowLink >= len(p.Links) {
+			break
+		}
+		next := p.Links[e.FollowLink].URL
+		if next == "" || visited[next] || DomainBlocked(next, s.settings.BlockedDomains) {
+			break
+		}
+		current = next
 	}
-	ext, err := llmscrape.ParseExtraction(raw, page)
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
-	llmscrape.ApplyDurationCheck(ext, file)
-	llmscrape.ApplyNameCheck(ext, file)
-	if ext.PageKind == llmscrape.KindDownload {
-		RecordDownloadSite(rawURL)
-	}
+	res.URL = page.URL
 
 	if !keepAny {
 		switch {
@@ -185,7 +217,7 @@ func (s *Service) scrapePage(ctx context.Context, rawURL string, fileID uint, fi
 
 	draft := &models.DraftScene{
 		FileID:          fileID,
-		SourceURL:       rawURL,
+		SourceURL:       page.URL,
 		Query:           query,
 		Status:          models.DraftStatusDraft,
 		MatchConfidence: ext.MatchConfidence,

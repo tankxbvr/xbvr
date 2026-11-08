@@ -23,6 +23,7 @@ const (
 	maxPageBytes      = 5 << 20
 	maxImageCands     = 60
 	maxVideoCands     = 12
+	maxLinkCands      = 40
 	maxStructuredData = 6000
 )
 
@@ -43,6 +44,7 @@ type Page struct {
 	Text           string // visible text
 	Images         []Candidate
 	Videos         []Candidate
+	Links          []Candidate // other pages this page links to, offered so the LLM can follow one
 }
 
 // Fetcher downloads pages. It refuses private network addresses unless allowed, checked at
@@ -191,6 +193,7 @@ func ExtractPage(pageURL *url.URL, html string, maxTextChars int) (*Page, error)
 
 	images := newCandidateSet(maxImageCands)
 	videos := newCandidateSet(maxVideoCands)
+	links := newCandidateSet(maxLinkCands)
 
 	// Social preview images are usually the cover, so they go first.
 	for _, k := range []string{"og:image", "og:image:secure_url", "twitter:image", "twitter:image:src"} {
@@ -252,11 +255,26 @@ func ExtractPage(pageURL *url.URL, html string, maxTextChars int) (*Page, error)
 		href := resolve(base, s.AttrOr("href", ""))
 		if videoURLRe.MatchString(href) {
 			videos.add(href, "link")
+			return
 		}
+		// Links in page furniture are navigation, not pages about this scene, and they crowd
+		// out the scene links on listing pages.
+		if href == "" || imageExtRe.MatchString(href) || s.Closest("nav, header, footer, aside").Length() > 0 {
+			return
+		}
+		hint := collapse(s.Text())
+		if hint == "" {
+			hint = collapse(s.Find("img[alt]").First().AttrOr("alt", ""))
+		}
+		if hint == "" {
+			hint = "link"
+		}
+		links.add(href, truncate(hint, 120))
 	})
 
 	p.Images = images.list(func(u string) bool { return isLikelyContentImage(u) && !IsExpiringURL(u) })
 	p.Videos = videos.list(func(u string) bool { return !IsExpiringURL(u) })
+	p.Links = links.list(nil)
 
 	doc.Find("script, style, noscript, svg, iframe, template").Remove()
 	p.Text = truncate(collapse(doc.Find("body").Text()), maxTextChars)
