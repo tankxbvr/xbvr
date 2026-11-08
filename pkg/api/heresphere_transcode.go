@@ -59,7 +59,7 @@ func heresphereTranscodeMedia(req *restful.Request, file models.File, prefix, dn
 		if file.VideoProjection == "360_tb" {
 			resolution = strconv.Itoa(height / 2)
 		}
-		name := fmt.Sprintf("%s %s %vp - %v", prefix, transcode.CodecLabel(codec), resolution, humanize.Bytes(uint64(size)))
+		name := fmt.Sprintf("%s transcoding %s %vp - %v", prefix, transcode.CodecLabel(codec), resolution, humanize.Bytes(uint64(size)))
 		if len(plan.Notes) > 0 {
 			name += " (" + strings.Join(plan.Notes, "; ") + ")"
 		}

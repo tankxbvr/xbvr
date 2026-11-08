@@ -94,13 +94,15 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	}
 	// A client may ask for a new encode from a time instead of a byte range. HereSphere
 	// appends start=<seconds> when it seeks a server-side transcode.
-	if raw := req.QueryParameter("start"); raw != "" {
-		if s, err := strconv.ParseFloat(raw, 64); err == nil && s >= 0 {
-			seek = s
-			hasRange = false
-			if seek >= f.VideoDuration {
-				seek = f.VideoDuration - 0.1
-			}
+	if s, ok := queryStart(req); ok {
+		// HereSphere uses seconds; a value far beyond the length is treated as milliseconds.
+		if f.VideoDuration > 0 && s > f.VideoDuration*1.5 {
+			s /= 1000
+		}
+		seek = s
+		hasRange = false
+		if seek >= f.VideoDuration {
+			seek = f.VideoDuration - 0.1
 		}
 	}
 	if seek < 0 {
@@ -110,8 +112,9 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	if playDuration <= 0 {
 		playDuration = f.VideoDuration
 	}
-	log.Infof("transcode request %d %s: range=%q start=%q seek=%.3f total=%d source=%.3f",
-		f.ID, codec, req.Request.Header.Get("Range"), req.QueryParameter("start"), seek, total, f.VideoDuration)
+	log.Infof("transcode request %d %s: range=%q start=%q seek=%.3f total=%d source=%.3f query=%q ua=%q",
+		f.ID, codec, req.Request.Header.Get("Range"), req.QueryParameter("start"), seek, total, f.VideoDuration,
+		req.Request.URL.RawQuery, req.Request.UserAgent())
 
 	var limit int64
 	h := resp.Header()
@@ -238,4 +241,16 @@ func parseByteRange(header string, total int64) (start, end int64, ok bool) {
 		end = total - 1
 	}
 	return start, end, true
+}
+
+// queryStart returns the last usable start value. Repeated start parameters are taken from
+// the end, since a client may append its own start to a URL that already carries one.
+func queryStart(req *restful.Request) (float64, bool) {
+	values := req.Request.URL.Query()["start"]
+	for i := len(values) - 1; i >= 0; i-- {
+		if s, err := strconv.ParseFloat(values[i], 64); err == nil && s >= 0 {
+			return s, true
+		}
+	}
+	return 0, false
 }
