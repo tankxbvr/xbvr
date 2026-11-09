@@ -403,7 +403,7 @@ func probeNVENC(ffmpegPath string, encoders map[string]bool) (Backend, []string)
 
 	var best Backend
 	bestCount := -1
-	var notes []string
+	var firstErr error
 	for _, gpu := range gpus {
 		candidate := Backend{
 			Name:        BackendNVENC,
@@ -414,7 +414,9 @@ func probeNVENC(ffmpegPath string, encoders map[string]bool) (Backend, []string)
 		}
 		for codec, encoder := range names {
 			if err := probeEncoder(ffmpegPath, candidate, codec, encoder); err != nil {
-				notes = append(notes, fmt.Sprintf("NVENC %s on GPU %d: %v", codec, gpu.index, compactError(err)))
+				if firstErr == nil {
+					firstErr = err
+				}
 				continue
 			}
 			candidate.Encoders[codec] = encoder
@@ -424,9 +426,12 @@ func probeNVENC(ffmpegPath string, encoders map[string]bool) (Backend, []string)
 		}
 	}
 	if bestCount <= 0 {
-		return Backend{}, notes
+		if firstErr != nil {
+			return Backend{}, []string{"NVENC: " + compactError(firstErr)}
+		}
+		return Backend{}, nil
 	}
-	return best, notes
+	return best, nil
 }
 
 func probeQSV(ffmpegPath string, encoders map[string]bool) (Backend, []string) {
@@ -435,8 +440,12 @@ func probeQSV(ffmpegPath string, encoders map[string]bool) (Backend, []string) {
 		return Backend{}, nil
 	}
 
-	var notes []string
-	for _, device := range drmDevices() {
+	devices := drmDevices()
+	if len(devices) == 0 {
+		return Backend{}, []string{"Quick Sync is compiled but /dev/dri has no render device"}
+	}
+	var firstErr error
+	for _, device := range devices {
 		for _, viaVAAPI := range []bool{false, true} {
 			candidate := Backend{
 				Name:        BackendQSV,
@@ -446,28 +455,28 @@ func probeQSV(ffmpegPath string, encoders map[string]bool) (Backend, []string) {
 				FreeVRAMMiB: 0,
 				qsvViaVAAPI: viaVAAPI,
 			}
-			var firstErr error
+			var candidateErr error
 			for codec, encoder := range names {
 				if err := probeEncoder(ffmpegPath, candidate, codec, encoder); err != nil {
-					if firstErr == nil {
-						firstErr = err
+					if candidateErr == nil {
+						candidateErr = err
 					}
 					continue
 				}
 				candidate.Encoders[codec] = encoder
 			}
 			if len(candidate.Encoders) > 0 {
-				if firstErr != nil {
-					notes = append(notes, fmt.Sprintf("QSV on %s has no encoder for one codec: %v", device, compactError(firstErr)))
-				}
-				return candidate, notes
+				return candidate, nil
 			}
-			if firstErr != nil {
-				notes = append(notes, fmt.Sprintf("QSV on %s: %v", device, compactError(firstErr)))
+			if candidateErr != nil && firstErr == nil {
+				firstErr = candidateErr
 			}
 		}
 	}
-	return Backend{}, notes
+	if firstErr != nil {
+		return Backend{}, []string{"Quick Sync: " + compactError(firstErr)}
+	}
+	return Backend{}, nil
 }
 
 func probeVAAPI(ffmpegPath string, encoders map[string]bool) (Backend, []string) {
@@ -476,35 +485,39 @@ func probeVAAPI(ffmpegPath string, encoders map[string]bool) (Backend, []string)
 		return Backend{}, nil
 	}
 
-	var notes []string
-	for _, device := range drmDevices() {
+	devices := drmDevices()
+	if len(devices) == 0 {
+		return Backend{}, []string{"VAAPI is compiled but /dev/dri has no render device"}
+	}
+	var firstErr error
+	for _, device := range devices {
 		candidate := Backend{
 			Name:     BackendVAAPI,
 			Label:    "VAAPI",
 			Encoders: map[string]string{},
 			Device:   device,
 		}
-		var firstErr error
+		var candidateErr error
 		for codec, encoder := range names {
 			if err := probeEncoder(ffmpegPath, candidate, codec, encoder); err != nil {
-				if firstErr == nil {
-					firstErr = err
+				if candidateErr == nil {
+					candidateErr = err
 				}
 				continue
 			}
 			candidate.Encoders[codec] = encoder
 		}
 		if len(candidate.Encoders) > 0 {
-			if firstErr != nil {
-				notes = append(notes, fmt.Sprintf("VAAPI on %s has no encoder for one codec: %v", device, compactError(firstErr)))
-			}
-			return candidate, notes
+			return candidate, nil
 		}
-		if firstErr != nil {
-			notes = append(notes, fmt.Sprintf("VAAPI on %s: %v", device, compactError(firstErr)))
+		if candidateErr != nil && firstErr == nil {
+			firstErr = candidateErr
 		}
 	}
-	return Backend{}, notes
+	if firstErr != nil {
+		return Backend{}, []string{"VAAPI: " + compactError(firstErr)}
+	}
+	return Backend{}, nil
 }
 
 func probeEncoder(ffmpegPath string, backend Backend, codec, encoder string) error {
