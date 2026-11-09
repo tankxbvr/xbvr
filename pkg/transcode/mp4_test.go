@@ -126,3 +126,79 @@ func TestReadMP4HeaderRejectsMissingMoov(t *testing.T) {
 		t.Fatal("a stream without moov should be rejected")
 	}
 }
+
+func testMoov(trackID, timescale uint32) []byte {
+	tkhd := testFullBox("tkhd", 0, func() []byte {
+		p := make([]byte, 20)
+		binary.BigEndian.PutUint32(p[8:12], trackID)
+		return p
+	}())
+	mdhd := testFullBox("mdhd", 0, func() []byte {
+		p := make([]byte, 16)
+		binary.BigEndian.PutUint32(p[8:12], timescale)
+		return p
+	}())
+	return testBox("moov", testBox("trak", tkhd, testBox("mdia", mdhd)))
+}
+
+func testMoof(trackID, baseDecodeTime uint32) []byte {
+	tfhd := testFullBox("tfhd", 0, func() []byte {
+		p := make([]byte, 8)
+		binary.BigEndian.PutUint32(p[0:4], trackID)
+		return p
+	}())
+	tfdt := testFullBox("tfdt", 0, func() []byte {
+		p := make([]byte, 4)
+		binary.BigEndian.PutUint32(p[0:4], baseDecodeTime)
+		return p
+	}())
+	return testBox("moof", testFullBox("mfhd", 0, make([]byte, 4)),
+		testBox("traf", tfhd, tfdt))
+}
+
+func tfdtField(t *testing.T, stream []byte) uint32 {
+	t.Helper()
+	i := bytes.Index(stream, []byte("tfdt"))
+	if i < 0 || i+12 > len(stream) {
+		t.Fatal("tfdt box not found")
+	}
+	return binary.BigEndian.Uint32(stream[i+8 : i+12])
+}
+
+func TestTrackTimescales(t *testing.T) {
+	moov := testMoov(3, 15360)
+	got := TrackTimescales(moov)
+	if got[3] != 15360 {
+		t.Errorf("TrackTimescales = %v, want track 3 at 15360", got)
+	}
+}
+
+func TestPatchFragmentTimesOffsetsTFDT(t *testing.T) {
+	moov := testMoov(1, 1000)
+	moof := testMoof(1, 0)
+	stream := append(append([]byte{}, moov...), moof...)
+	var out bytes.Buffer
+	if err := PatchFragmentTimes(bytes.NewReader(stream), &out, moov, 12.5); err != nil {
+		t.Fatal(err)
+	}
+	if got := tfdtField(t, out.Bytes()); got != 12500 {
+		t.Errorf("tfdt = %d, want 12500", got)
+	}
+}
+
+func TestPatchFragmentTimesLeavesDataBeforeMoof(t *testing.T) {
+	moov := testMoov(1, 1000)
+	moof := testMoof(1, 0)
+	stream := append(append([]byte{}, moov...), moof...)
+	stream = append(stream, testBox("mdat", []byte("video data"))...)
+	var out bytes.Buffer
+	if err := PatchFragmentTimes(bytes.NewReader(stream), &out, moov, 5); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("video data")) {
+		t.Error("mdat payload was not copied")
+	}
+	if !bytes.Contains(out.Bytes(), []byte("moof")) {
+		t.Error("moof box was not copied")
+	}
+}

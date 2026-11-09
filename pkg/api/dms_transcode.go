@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -112,6 +113,10 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	if playDuration <= 0 {
 		playDuration = f.VideoDuration
 	}
+	duration := f.VideoDuration
+	if duration <= 0 {
+		duration = playDuration
+	}
 	log.Infof("transcode request %d %s (%s): range=%q start=%q seek=%.3f total=%d source=%.3f query=%q ua=%q",
 		f.ID, codec, plan.Label(), req.Request.Header.Get("Range"), req.QueryParameter("start"), seek, total, f.VideoDuration,
 		req.Request.URL.RawQuery, req.Request.UserAgent())
@@ -121,7 +126,7 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	h.Set("Content-Type", "video/mp4")
 	h.Set("Accept-Ranges", "bytes")
 	h.Set("Cache-Control", "no-store")
-	h.Set("Content-Duration", strconv.FormatFloat(playDuration, 'f', 3, 64))
+	h.Set("Content-Duration", strconv.FormatFloat(duration, 'f', 3, 64))
 	if hasRange {
 		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
 		// An open-ended range runs to the end of the stream; a bounded one stops after the
@@ -151,31 +156,68 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 
 	// ffmpeg's fragmented MP4 header has a zero duration, so players treat it as a live
 	// stream with no length. Write the known length into the header before streaming it.
-	header, headerErr := transcode.ReadMP4Header(stdout, playDuration)
+	header, headerErr := transcode.ReadMP4Header(stdout, duration)
 	if headerErr != nil {
 		log.Warnf("transcode %d: mp4 header: %v", f.ID, headerErr)
 	}
 	writer := &flushWriter{w: resp.ResponseWriter}
 	written := int64(0)
+	headerComplete := true
 	if limit > 0 && int64(len(header)) > limit {
 		header = header[:limit]
+		headerComplete = false
 	}
 	if len(header) > 0 {
 		n, _ := writer.Write(header)
 		written = int64(n)
 	}
+
+	dest := io.Writer(writer)
 	if limit > 0 {
-		if remaining := limit - written; remaining > 0 {
-			io.CopyN(writer, stdout, remaining)
+		remaining := limit - written
+		if remaining < 0 {
+			remaining = 0
 		}
+		dest = &limitedWriter{w: writer, remaining: remaining}
+	}
+	var streamErr error
+	if seek > 0 && headerErr == nil && headerComplete {
+		// A range seek starts a new encode at seek. Shift its fragment timestamps to the
+		// requested time so the player keeps the seek position instead of restarting at zero.
+		streamErr = transcode.PatchFragmentTimes(stdout, dest, header, seek)
+	} else {
+		_, streamErr = io.Copy(dest, stdout)
+	}
+	if limit > 0 {
 		// The rest of the encode is no longer wanted; stop ffmpeg rather than block on it.
 		cmd.Process.Kill()
-	} else {
-		io.Copy(writer, stdout)
+	} else if streamErr != nil && !errors.Is(streamErr, io.ErrShortWrite) && req.Request.Context().Err() == nil {
+		log.Warnf("transcode %d: stream: %v", f.ID, streamErr)
 	}
 	if err := cmd.Wait(); err != nil && req.Request.Context().Err() == nil && limit == 0 {
 		log.Warnf("transcode %d: ffmpeg: %v: %s", f.ID, err, strings.TrimSpace(stderr.String()))
 	}
+}
+
+// limitedWriter stops a stream at a byte count without buffering the rest of the encode.
+type limitedWriter struct {
+	w         io.Writer
+	remaining int64
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if l.remaining <= 0 {
+		return 0, io.ErrShortWrite
+	}
+	if int64(len(p)) > l.remaining {
+		p = p[:l.remaining]
+	}
+	n, err := l.w.Write(p)
+	l.remaining -= int64(n)
+	if err == nil && l.remaining == 0 {
+		err = io.ErrShortWrite
+	}
+	return n, err
 }
 
 // ffmpegBin prefers an ffmpeg on PATH, which in the container is the build made with NVENC,

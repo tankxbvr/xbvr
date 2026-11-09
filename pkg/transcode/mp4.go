@@ -195,6 +195,202 @@ func patchMehd(payload []byte, seconds float64, timescale uint32) {
 	}
 }
 
+// TrackTimescales maps the track IDs in a moov box to their media timescales. Fragment
+// timestamps are written in each track's own timescale, so both values are needed when a
+// stream is shifted to start at a seek position.
+func TrackTimescales(moov []byte) map[uint32]uint32 {
+	timescales := map[uint32]uint32{}
+	if len(moov) < 8 || string(moov[4:8]) != "moov" {
+		return timescales
+	}
+	walkBoxes(moov[8:], func(typ string, payload []byte) {
+		if typ != "trak" {
+			return
+		}
+		var trackID, timescale uint32
+		walkBoxes(payload, func(typ string, payload []byte) {
+			switch typ {
+			case "tkhd":
+				trackID = tkhdTrackID(payload)
+			case "mdhd":
+				timescale = mdhdTimescale(payload)
+			}
+		})
+		if trackID > 0 && timescale > 0 {
+			timescales[trackID] = timescale
+		}
+	})
+	return timescales
+}
+
+func tkhdTrackID(payload []byte) uint32 {
+	if len(payload) < 4 {
+		return 0
+	}
+	switch payload[0] {
+	case 0:
+		if len(payload) >= 16 {
+			return binary.BigEndian.Uint32(payload[12:16])
+		}
+	case 1:
+		if len(payload) >= 24 {
+			return binary.BigEndian.Uint32(payload[20:24])
+		}
+	}
+	return 0
+}
+
+func mdhdTimescale(payload []byte) uint32 {
+	if len(payload) < 4 {
+		return 0
+	}
+	switch payload[0] {
+	case 0:
+		if len(payload) >= 16 {
+			return binary.BigEndian.Uint32(payload[12:16])
+		}
+	case 1:
+		if len(payload) >= 24 {
+			return binary.BigEndian.Uint32(payload[20:24])
+		}
+	}
+	return 0
+}
+
+// maxMoofSize bounds the fragment header held in memory while timestamps are shifted.
+const maxMoofSize = 64 << 20
+
+// PatchFragmentTimes copies a fragmented MP4 stream and shifts every fragment's tfdt box by
+// offsetSeconds. A fresh encode starts its timestamps at zero; without this shift a player
+// that seeks by byte range sees the new segment as the start of the video and resets its
+// position. moov is the header already returned by ReadMP4Header.
+func PatchFragmentTimes(r io.Reader, w io.Writer, moov []byte, offsetSeconds float64) error {
+	if offsetSeconds <= 0 {
+		_, err := io.Copy(w, r)
+		return err
+	}
+	timescales := TrackTimescales(moov)
+	for {
+		size, typ, header, err := readBoxHeader(r)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if size == 0 {
+			// A zero-sized box runs to the end of the stream.
+			if _, err := w.Write(header); err != nil {
+				return err
+			}
+			_, err := io.Copy(w, r)
+			return err
+		}
+		headerLen := int64(len(header))
+		if size < headerLen {
+			return fmt.Errorf("mp4: invalid %q box size %d", typ, size)
+		}
+		bodyLen := size - headerLen
+		if typ == "moof" {
+			if bodyLen > maxMoofSize {
+				return fmt.Errorf("mp4: %q box of %d bytes is too large", typ, bodyLen)
+			}
+			body := make([]byte, int(bodyLen))
+			if _, err := io.ReadFull(r, body); err != nil {
+				return err
+			}
+			patchMoofTimes(body, timescales, offsetSeconds)
+			if _, err := w.Write(header); err != nil {
+				return err
+			}
+			if _, err := w.Write(body); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := w.Write(header); err != nil {
+			return err
+		}
+		if bodyLen > 0 {
+			if _, err := io.CopyN(w, r, bodyLen); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func patchMoofTimes(moof []byte, timescales map[uint32]uint32, offsetSeconds float64) {
+	if len(moof) < 8 {
+		return
+	}
+	walkBoxes(moof, func(typ string, payload []byte) {
+		if typ == "traf" {
+			patchTrafTimes(payload, timescales, offsetSeconds)
+		}
+	})
+}
+
+func patchTrafTimes(traf []byte, timescales map[uint32]uint32, offsetSeconds float64) {
+	var trackID uint32
+	walkBoxes(traf, func(typ string, payload []byte) {
+		if typ == "tfhd" {
+			trackID = tfhdTrackID(payload)
+		}
+	})
+	timescale, ok := timescales[trackID]
+	if trackID == 0 || !ok || timescale == 0 {
+		return
+	}
+	delta := uint64(math.Round(offsetSeconds * float64(timescale)))
+	walkBoxes(traf, func(typ string, payload []byte) {
+		if typ == "tfdt" {
+			shiftTFDT(payload, delta)
+		}
+	})
+}
+
+func tfhdTrackID(payload []byte) uint32 {
+	if len(payload) < 8 {
+		return 0
+	}
+	flags := binary.BigEndian.Uint32(payload[:4]) & 0xffffff
+	offset := 4
+	if flags&0x01 != 0 {
+		offset += 8 // base-data-offset is present
+	}
+	if len(payload) < offset+4 {
+		return 0
+	}
+	return binary.BigEndian.Uint32(payload[offset : offset+4])
+}
+
+func shiftTFDT(payload []byte, delta uint64) {
+	if len(payload) < 4 {
+		return
+	}
+	switch payload[0] {
+	case 0:
+		if len(payload) >= 8 {
+			value := uint64(binary.BigEndian.Uint32(payload[4:8]))
+			value = addSaturated(value, delta, math.MaxUint32)
+			binary.BigEndian.PutUint32(payload[4:8], uint32(value))
+		}
+	case 1:
+		if len(payload) >= 12 {
+			value := binary.BigEndian.Uint64(payload[4:12])
+			value = addSaturated(value, delta, math.MaxUint64)
+			binary.BigEndian.PutUint64(payload[4:12], value)
+		}
+	}
+}
+
+func addSaturated(value, delta, limit uint64) uint64 {
+	if value >= limit || delta >= limit-value {
+		return limit
+	}
+	return value + delta
+}
+
 func durationUnits(seconds float64, timescale uint32) uint32 {
 	n := math.Round(seconds * float64(timescale))
 	if n < 0 {
