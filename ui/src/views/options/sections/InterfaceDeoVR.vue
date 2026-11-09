@@ -259,9 +259,10 @@
           <p class="help">
             Adds one stream per selected codec to each video, encoded on the fly with ffmpeg.
             Its size in HereSphere is an estimate for the configured bitrate, since nothing is
-            written to disk. H.264 tops out at 4096x4096, so larger sources are scaled down;
-            HEVC and AV1 handle up to 8192x8192. Very large frames may be limited to 30 fps,
-            which is shown in the stream name.
+            written to disk. The hardware encoder is detected automatically: NVENC, Intel
+            Quick Sync, VAAPI, or x264 on the CPU. H.264 tops out at 4096x4096, so larger
+            sources are scaled down; HEVC and AV1 handle up to 8192x8192. Very large frames may
+            be limited to 30 fps, which is shown in the stream name.
           </p>
           <b-field label="Enable live transcode">
             <b-switch v-model="transcodeEnabled">Enabled</b-switch>
@@ -270,10 +271,10 @@
             <div class="column">
               <b-field label="Codecs offered to the headset">
                 <b-select v-model="transcodeCodecs" multiple expanded>
-                  <option value="h264">H.264 (NVENC)</option>
-                  <option value="hevc">HEVC / H.265 (NVENC)</option>
-                  <option value="av1">AV1 (NVENC)</option>
-                  <option value="x264">H.264 (x264, CPU)</option>
+                  <option value="h264">H.264 (hardware when available)</option>
+                  <option value="hevc">HEVC / H.265 (hardware when available)</option>
+                  <option value="av1">AV1 (hardware when available)</option>
+                  <option value="x264">H.264 (x264, CPU fallback)</option>
                 </b-select>
               </b-field>
               <b-field label="Video bitrate (Mbps)">
@@ -289,6 +290,57 @@
               </b-field>
             </div>
           </div>
+          <div v-if="transcodeEnabled" class="block">
+            <b-button type="is-info" :loading="transcodeTestLoading" @click="testTranscode">
+              Test hardware setup
+            </b-button>
+            <p class="help">
+              Runs a two-second unpaced encode from up to three differently sized local videos.
+              This checks the real encoder, scaling and muxing path rather than only whether
+              ffmpeg lists the encoder.
+            </p>
+            <div v-if="transcodeTestError" class="notification is-danger is-light">
+              {{ transcodeTestError }}
+            </div>
+            <div v-if="transcodeTestHardware" class="notification is-light">
+              <p>
+                <strong>Detected hardware:</strong>
+                <span v-for="(b, idx) in transcodeTestHardware.available" :key="b.name">
+                  <span v-if="idx > 0">, </span>{{ b.label }}<span v-if="b.device"> ({{ b.device }})</span>
+                </span>
+              </p>
+              <p v-if="transcodeTestHardware.notes && transcodeTestHardware.notes.length">
+                <strong>Notes:</strong> {{ transcodeTestHardware.notes.join('; ') }}
+              </p>
+              <table v-if="transcodeTestResults.length" class="table is-narrow is-fullwidth">
+                <thead>
+                  <tr>
+                    <th>Stream</th>
+                    <th>Sample</th>
+                    <th>Output</th>
+                    <th>Result</th>
+                    <th>Speed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in transcodeTestResults" :key="r.sample.file_id + '-' + r.codec">
+                    <td>{{ r.label }}</td>
+                    <td>{{ r.sample.width }}x{{ r.sample.height }}</td>
+                    <td>{{ r.width }}x{{ r.height }}</td>
+                    <td>
+                      <span :class="!r.success ? 'has-text-danger' : (r.warning ? 'has-text-warning' : 'has-text-success')">
+                        {{ !r.success ? r.error : (r.warning || 'OK') }}
+                      </span>
+                    </td>
+                    <td>
+                      <span v-if="r.speed">{{ r.speed.toFixed(2) }}x</span>
+                      <span v-else>—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
       </div>
       <b-field>
         <b-button type="is-primary" @click="save">Save and apply changes</b-button>
@@ -297,6 +349,8 @@
 </template>
 
 <script>
+import ky from 'ky'
+
 export default {
   name: 'InterfaceDeoVR',
   mounted () {
@@ -310,12 +364,47 @@ export default {
       selectedScriptField: 'Filename',
       selectedScriptSequence: 'Ascending',
       selectedSubtitleField: 'Filename',
-      selectedSubtitleSequence: 'Ascending'
+      selectedSubtitleSequence: 'Ascending',
+      transcodeTestLoading: false,
+      transcodeTestHardware: null,
+      transcodeTestResults: [],
+      transcodeTestError: ''
     }
   },
   methods: {
     save () {
       this.$store.dispatch('optionsDeoVR/save')
+    },
+    async testTranscode () {
+      this.transcodeTestLoading = true
+      this.transcodeTestError = ''
+      this.transcodeTestHardware = null
+      this.transcodeTestResults = []
+      try {
+        const data = await ky.post('/api/options/transcode/test', {
+          json: {
+            codecs: this.transcodeCodecs,
+            sample_limit: 3,
+            duration_seconds: 2
+          },
+          timeout: 180000
+        }).json()
+        this.transcodeTestHardware = data.hardware
+        this.transcodeTestResults = data.results || []
+        const passed = this.transcodeTestResults.filter(r => r.success).length
+        const slow = this.transcodeTestResults.filter(r => r.success && r.warning).length
+        const failed = this.transcodeTestResults.length - passed
+        this.$buefy.toast.open({
+          message: failed === 0 && slow === 0
+            ? `All ${passed} transcode test(s) passed at realtime or better`
+            : `${passed} passed, ${slow} slower than realtime, ${failed} failed`,
+          type: failed === 0 && slow === 0 ? 'is-success' : 'is-warning'
+        })
+      } catch (err) {
+        this.transcodeTestError = `The transcode test did not complete: ${err.message}`
+      } finally {
+        this.transcodeTestLoading = false
+      }
     },
     addIP (value) {
       const tmp = [...this.allowedIp]

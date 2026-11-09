@@ -11,7 +11,8 @@ import (
 	"strings"
 )
 
-// Codecs a client can be offered. The first three use NVENC; x264 is a CPU fallback.
+// Codecs a client can be offered. The encoder behind them is selected per machine;
+// x264 is the CPU fallback and also serves h264 when no hardware encoder is usable.
 const (
 	CodecH264 = "h264"
 	CodecHEVC = "hevc"
@@ -82,25 +83,41 @@ func (o Options) normalized() Options {
 	return o
 }
 
-// capability is what one codec can encode. NVENC's H.264 encoder is limited to 4096x4096;
-// HEVC and AV1 reach 8192x8192. PixelBudget is a conservative pixels-per-second estimate for
-// a fast preset, used to decide whether the source frame rate fits.
+// capability is what one codec can encode. H.264 encoders commonly stop at 4096x4096;
+// HEVC and AV1 reach 8192x8192. PixelBudget is a conservative pixels-per-second estimate
+// for a fast preset, used to decide whether the source frame rate fits.
 type capability struct {
 	maxWidth, maxHeight int
 	pixelBudget         float64
 }
 
-var capabilities = map[string]capability{
+var nvencCapabilities = map[string]capability{
 	CodecH264: {4096, 4096, 2.0e9},
 	CodecHEVC: {8192, 8192, 2.2e9},
 	CodecAV1:  {8192, 8192, 1.4e9},
 	CodecX264: {8192, 8192, 0.9e9},
 }
 
-// Plan is the resolved output for one codec: the size it will encode at, the frame rate it
-// will cap to, and any user-facing notes about the adjustments.
+var vaapiCapabilities = map[string]capability{
+	CodecH264: {4096, 4096, 1.6e9},
+	CodecHEVC: {8192, 8192, 1.8e9},
+	CodecAV1:  {8192, 8192, 1.2e9},
+	CodecX264: {8192, 8192, 0.9e9},
+}
+
+var qsvCapabilities = map[string]capability{
+	CodecH264: {4096, 4096, 1.8e9},
+	CodecHEVC: {8192, 8192, 2.0e9},
+	CodecAV1:  {8192, 8192, 1.2e9},
+	CodecX264: {8192, 8192, 0.9e9},
+}
+
+// Plan is the resolved output for one codec: the encoder and hardware device, the size it
+// will encode at, the frame rate it will cap to, and any user-facing notes about adjustments.
 type Plan struct {
 	Codec       string
+	Encoder     string
+	Backend     Backend
 	Width       int
 	Height      int
 	FPS         float64 // 0 = keep the source frame rate
@@ -109,10 +126,18 @@ type Plan struct {
 	Notes       []string
 }
 
-// vramNeedMiB estimates the encoder's VRAM for an output size. The figures come from
+// Label names the stream for clients that show the codec and encoder.
+func (p Plan) Label() string {
+	if p.Backend.Name == "" {
+		return CodecLabel(p.Codec)
+	}
+	return p.Backend.LabelFor(p.Codec)
+}
+
+// vramNeedMiB estimates NVENC's VRAM for an output size. The figures come from
 // measurements on Blackwell: roughly 0.7 GB at 1080p, 0.7-1.1 GB at 4K, and about 1.1 GB
 // for HEVC at 8K. AV1 at 8K needs well over 1.8 GB and is not viable on a card with less
-// free memory. x264 encodes on the CPU and uses no VRAM.
+// free memory. x264 and the VAAPI/QSV paths use no dedicated VRAM measurement here.
 func vramNeedMiB(codec string, width, height int) int {
 	if codec == CodecX264 || width <= 0 || height <= 0 {
 		return 0
@@ -190,18 +215,50 @@ func FreeVRAM() (freeMiB, gpuIndex int) {
 	return freeMiB, gpuIndex
 }
 
-// PlanFor works out how a codec handles a source. Sources larger than the codec's limit are
-// scaled down to fit; if freeVRAMMiB is known and the encode would not fit, the output is
-// scaled down until it does, or marked unavailable. A frame rate the codec cannot sustain is
-// limited to 30 fps. Both adjustments are reported in Notes so the client can see why.
-// srcFPS may be 0 when unknown; freeVRAMMiB may be 0 when unknown.
+// PlanFor works out how a codec handles a source on the detected hardware. Sources larger
+// than the codec's limit are scaled down to fit; for NVENC, if free VRAM is known and the
+// encode would not fit, the output is scaled down until it does, or marked unavailable. A
+// frame rate the encoder cannot sustain is limited to 30 fps. Both adjustments are reported
+// in Notes so the client can see why.
 func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64, freeVRAMMiB int) Plan {
+	encoders := map[string]string{
+		CodecH264: "h264_nvenc",
+		CodecHEVC: "hevc_nvenc",
+		CodecAV1:  "av1_nvenc",
+	}
+	backend := Backend{
+		Name:        BackendNVENC,
+		Label:       "NVENC",
+		Encoders:    encoders,
+		GPUIndex:    0,
+		FreeVRAMMiB: freeVRAMMiB,
+	}
+	cpu := Backend{
+		Name:     BackendCPU,
+		Label:    "CPU (x264)",
+		Encoders: map[string]string{CodecH264: "libx264", CodecX264: "libx264"},
+	}
+	hw := Hardware{Preferred: backend, Available: []Backend{backend, cpu}}
+	return PlanForEncoder(codec, hw, opts, srcWidth, srcHeight, srcFPS)
+}
+
+// PlanForEncoder is the same planning step using the hardware detected on this machine.
+// The backend can differ per codec when one GPU lacks a particular encoder.
+func PlanForEncoder(codec string, hw Hardware, opts Options, srcWidth, srcHeight int, srcFPS float64) Plan {
 	o := opts.normalized()
 	if !IsCodec(codec) {
 		codec = CodecH264
 	}
-	cap := capabilities[codec]
-	p := Plan{Codec: codec}
+	backend, ok := hw.BackendFor(codec)
+	if !ok {
+		return Plan{
+			Codec:       codec,
+			Unavailable: true,
+			Notes:       []string{fmt.Sprintf("%s is not available on this machine", CodecLabel(codec))},
+		}
+	}
+	cap := capabilityFor(backend.Name, codec)
+	p := Plan{Codec: codec, Encoder: backend.Encoder(codec), Backend: backend}
 
 	width, height := srcWidth, srcHeight
 	if width > 0 && height > 0 {
@@ -216,11 +273,11 @@ func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64
 			width = int(float64(width) * factor)
 			height = int(float64(height) * factor)
 			p.Notes = append(p.Notes, fmt.Sprintf("scaled from %dx%d; %s tops out at %dx%d",
-				fromW, fromH, CodecLabel(codec), cap.maxWidth, cap.maxHeight))
+				fromW, fromH, p.Label(), cap.maxWidth, cap.maxHeight))
 		}
 		width, height = even(width), even(height)
 
-		if !fitsVRAM(codec, width, height, freeVRAMMiB) {
+		if freeVRAMMiB := p.freeVRAM(); freeVRAMMiB > 0 && !fitsVRAM(codec, width, height, freeVRAMMiB) {
 			originalW, originalH := width, height
 			fitted := false
 			for _, target := range []int{2160, 1440, 1080, 720} {
@@ -237,7 +294,7 @@ func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64
 			}
 			if !fitted {
 				p.Unavailable = true
-				p.Notes = append(p.Notes, fmt.Sprintf("not enough free VRAM for %s at this size (%d MiB free)", CodecLabel(codec), freeVRAMMiB))
+				p.Notes = append(p.Notes, fmt.Sprintf("not enough free VRAM for %s at this size (%d MiB free)", p.Label(), freeVRAMMiB))
 			}
 		}
 
@@ -254,11 +311,11 @@ func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64
 		maxFPS := cap.pixelBudget / float64(width*height)
 		if target > maxFPS && target > 30 {
 			p.Notes = append(p.Notes, fmt.Sprintf("%.0f fps is too much for %s at %dx%d; using 30 fps",
-				srcFPS, CodecLabel(codec), width, height))
+				srcFPS, p.Label(), width, height))
 			target = 30
 		} else if target > maxFPS {
 			p.Notes = append(p.Notes, fmt.Sprintf("%s may not sustain %.0f fps at %dx%d",
-				CodecLabel(codec), target, width, height))
+				p.Label(), target, width, height))
 		}
 	}
 	if target > 0 && target != math.Round(srcFPS*100)/100 {
@@ -267,8 +324,31 @@ func PlanFor(codec string, opts Options, srcWidth, srcHeight int, srcFPS float64
 	return p
 }
 
-// preset picks a preset fast enough for the output pixel rate. Large frames need the fastest
-// presets to hold 60 fps; smaller ones can afford better quality.
+func capabilityFor(backend, codec string) capability {
+	var table map[string]capability
+	switch backend {
+	case BackendVAAPI:
+		table = vaapiCapabilities
+	case BackendQSV:
+		table = qsvCapabilities
+	default:
+		table = nvencCapabilities
+	}
+	if cap, ok := table[codec]; ok {
+		return cap
+	}
+	return nvencCapabilities[CodecH264]
+}
+
+func (p Plan) freeVRAM() int {
+	if p.Backend.Name != BackendNVENC {
+		return 0
+	}
+	return p.Backend.FreeVRAMMiB
+}
+
+// preset picks an NVENC preset fast enough for the output pixel rate. Large frames need the
+// fastest presets to hold 60 fps; smaller ones can afford better quality.
 func (p Plan) preset() string {
 	fps := p.FPS
 	if fps <= 0 {
@@ -284,6 +364,25 @@ func (p Plan) preset() string {
 		return "p3"
 	default:
 		return "p4"
+	}
+}
+
+// qsvPreset maps the same pixel-rate thresholds onto Quick Sync's preset names.
+func (p Plan) qsvPreset() string {
+	fps := p.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+	rate := float64(p.Width) * float64(p.Height) * fps
+	switch {
+	case rate > 1.2e9:
+		return "veryfast"
+	case rate > 0.8e9:
+		return "faster"
+	case rate > 0.4e9:
+		return "fast"
+	default:
+		return "medium"
 	}
 }
 
@@ -307,29 +406,74 @@ func even(n int) int {
 
 // Args returns the ffmpeg arguments that stream path as fragmented MP4 on stdout, starting at
 // seekSeconds. -re paces the encode at playback speed, so a long file is not encoded ahead of
-// the player.
+// the player. gpuIndex overrides the plan's NVENC GPU when it is not negative.
 func Args(ffmpegPath, path string, seekSeconds float64, opts Options, p Plan, gpuIndex int) []string {
+	if gpuIndex >= 0 {
+		p.Backend.GPUIndex = gpuIndex
+	}
+	args := inputArgs(ffmpegPath, path, seekSeconds, p, true)
+	args = append(args, videoArgs(opts, p)...)
 	o := opts.normalized()
-	videoKbps := o.BitrateMbps * 1000
+	args = append(args,
+		"-c:a", "aac", "-b:a", fmt.Sprintf("%dk", o.AudioKbps), "-ac", "2",
+		"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+		"-f", "mp4", "pipe:1",
+	)
+	return args
+}
 
+// TestArgs runs the same encoder as Args but unpaced and for a short duration, writing a real
+// fragmented MP4. That catches device, filter and muxer problems a plain encoder listing misses.
+func TestArgs(ffmpegPath, path string, durationSeconds float64, opts Options, p Plan, out string) []string {
+	args := inputArgs(ffmpegPath, path, 0, p, false)
+	args = append(args, "-t", strconv.FormatFloat(durationSeconds, 'f', 3, 64))
+	args = append(args, videoArgs(opts, p)...)
+	args = append(args,
+		"-an",
+		"-progress", "pipe:1",
+		"-y",
+		"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+		"-f", "mp4", out,
+	)
+	return args
+}
+
+func inputArgs(ffmpegPath, path string, seekSeconds float64, p Plan, paced bool) []string {
 	args := []string{ffmpegPath, "-hide_banner", "-loglevel", "error", "-nostdin"}
 	if seekSeconds > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(seekSeconds, 'f', 3, 64))
 	}
-	args = append(args, "-re", "-i", path)
-
-	switch p.Codec {
-	case CodecX264:
-		args = append(args, "-c:v", "libx264", "-preset", "veryfast")
-	case CodecHEVC:
-		args = append(args, "-c:v", "hevc_nvenc", "-preset", p.preset(), "-rc", "vbr", "-cq", "23")
-	case CodecAV1:
-		args = append(args, "-c:v", "av1_nvenc", "-preset", p.preset(), "-rc", "vbr", "-cq", "23")
-	default:
-		args = append(args, "-c:v", "h264_nvenc", "-preset", p.preset(), "-rc", "vbr", "-cq", "23")
+	args = append(args, p.Backend.preInputArgs()...)
+	if paced {
+		args = append(args, "-re")
 	}
-	if p.Codec != CodecX264 && gpuIndex >= 0 {
-		args = append(args, "-gpu", strconv.Itoa(gpuIndex))
+	args = append(args, "-i", path)
+	return args
+}
+
+func videoArgs(opts Options, p Plan) []string {
+	o := opts.normalized()
+	videoKbps := o.BitrateMbps * 1000
+	encoder := p.Encoder
+	if encoder == "" {
+		encoder = defaultEncoder(p.Backend.Name, p.Codec)
+	}
+
+	var args []string
+	switch p.Backend.Name {
+	case BackendCPU:
+		args = append(args, "-c:v", encoder, "-preset", "veryfast")
+	case BackendVAAPI:
+		args = append(args, "-c:v", encoder, "-rc_mode", "VBR")
+	case BackendQSV:
+		args = append(args, "-c:v", encoder, "-preset", p.qsvPreset(), "-global_quality", "23")
+	default:
+		args = append(args, "-c:v", encoder, "-preset", p.preset(), "-rc", "vbr", "-cq", "23")
+		if p.Backend.GPUIndex >= 0 && p.Backend.GPUIndex != 0 {
+			args = append(args, "-gpu", strconv.Itoa(p.Backend.GPUIndex))
+		} else if p.Backend.GPUIndex == 0 {
+			args = append(args, "-gpu", "0")
+		}
 	}
 
 	args = append(args,
@@ -337,17 +481,63 @@ func Args(ffmpegPath, path string, seekSeconds float64, opts Options, p Plan, gp
 		"-maxrate", fmt.Sprintf("%dk", videoKbps),
 		"-bufsize", fmt.Sprintf("%dk", videoKbps*2),
 	)
-	if p.Scale && p.Width > 0 && p.Height > 0 {
-		args = append(args, "-vf", fmt.Sprintf("scale=%d:%d", p.Width, p.Height))
+
+	if filter := videoFilter(p); filter != "" {
+		args = append(args, "-vf", filter)
 	}
 	if p.FPS > 0 {
 		args = append(args, "-r", strconv.FormatFloat(p.FPS, 'f', 3, 64))
 	}
-	args = append(args,
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-b:a", fmt.Sprintf("%dk", o.AudioKbps), "-ac", "2",
-		"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-		"-f", "mp4", "pipe:1",
-	)
+	if p.Backend.Name != BackendVAAPI && p.Backend.Name != BackendQSV {
+		args = append(args, "-pix_fmt", "yuv420p")
+	}
 	return args
+}
+
+func videoFilter(p Plan) string {
+	var parts []string
+	if p.Scale && p.Width > 0 && p.Height > 0 {
+		parts = append(parts, fmt.Sprintf("scale=%d:%d", p.Width, p.Height))
+	}
+	switch p.Backend.Name {
+	case BackendVAAPI:
+		parts = append(parts, "format=nv12", "hwupload")
+	case BackendQSV:
+		parts = append(parts, "format=nv12", "hwupload=extra_hw_frames=64")
+	}
+	return strings.Join(parts, ",")
+}
+
+func defaultEncoder(backend, codec string) string {
+	switch backend {
+	case BackendCPU:
+		return "libx264"
+	case BackendVAAPI:
+		switch codec {
+		case CodecHEVC:
+			return "hevc_vaapi"
+		case CodecAV1:
+			return "av1_vaapi"
+		default:
+			return "h264_vaapi"
+		}
+	case BackendQSV:
+		switch codec {
+		case CodecHEVC:
+			return "hevc_qsv"
+		case CodecAV1:
+			return "av1_qsv"
+		default:
+			return "h264_qsv"
+		}
+	default:
+		switch codec {
+		case CodecHEVC:
+			return "hevc_nvenc"
+		case CodecAV1:
+			return "av1_nvenc"
+		default:
+			return "h264_nvenc"
+		}
+	}
 }

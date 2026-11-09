@@ -337,6 +337,9 @@ func (i ConfigResource) WebService() *restful.WebService {
 	ws.Route(ws.POST("/previews/test").To(i.generateTestPreview).
 		Metadata(restfulspec.KeyOpenAPITags, tags))
 
+	ws.Route(ws.POST("/transcode/test").To(i.testTranscode).
+		Metadata(restfulspec.KeyOpenAPITags, tags))
+
 	// "Funscripts" section endpoints
 	ws.Route(ws.GET("/funscripts/count").To(i.getFunscriptsCount).
 		Metadata(restfulspec.KeyOpenAPITags, tags))

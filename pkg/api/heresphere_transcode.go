@@ -40,14 +40,16 @@ func heresphereTranscodeMedia(req *restful.Request, file models.File, prefix, dn
 	if size <= 0 {
 		return nil
 	}
-	freeVRAM, _ := transcode.FreeVRAM()
+	hw := transcode.Detect(ffmpegBin())
 
 	var media []HeresphereMedia
+	seenEncoder := map[string]bool{}
 	for _, codec := range codecs {
-		plan := transcode.PlanFor(codec, opts, file.VideoWidth, file.VideoHeight, file.VideoAvgFrameRateVal, freeVRAM)
-		if plan.Unavailable {
+		plan := transcode.PlanForEncoder(codec, hw, opts, file.VideoWidth, file.VideoHeight, file.VideoAvgFrameRateVal)
+		if plan.Unavailable || plan.Encoder == "" || seenEncoder[plan.Encoder] {
 			continue
 		}
+		seenEncoder[plan.Encoder] = true
 		height, width := plan.Height, plan.Width
 		if height <= 0 {
 			height = file.VideoHeight
@@ -59,7 +61,7 @@ func heresphereTranscodeMedia(req *restful.Request, file models.File, prefix, dn
 		if file.VideoProjection == "360_tb" {
 			resolution = strconv.Itoa(height / 2)
 		}
-		name := fmt.Sprintf("%s transcoding %s %vp - %v", prefix, transcode.CodecLabel(codec), resolution, humanize.Bytes(uint64(size)))
+		name := fmt.Sprintf("%s transcoding %s %vp - %v", prefix, plan.Label(), resolution, humanize.Bytes(uint64(size)))
 		if len(plan.Notes) > 0 {
 			name += " (" + strings.Join(plan.Notes, "; ") + ")"
 		}
