@@ -197,29 +197,45 @@ func patchMehd(payload []byte, seconds float64, timescale uint32) {
 
 // TrackTimescales maps the track IDs in a moov box to their media timescales. Fragment
 // timestamps are written in each track's own timescale, so both values are needed when a
-// stream is shifted to start at a seek position.
-func TrackTimescales(moov []byte) map[uint32]uint32 {
+// stream is shifted to start at a seek position. The input may be the full ftyp and moov
+// prefix returned by ReadMP4Header.
+func TrackTimescales(header []byte) map[uint32]uint32 {
 	timescales := map[uint32]uint32{}
-	if len(moov) < 8 || string(moov[4:8]) != "moov" {
-		return timescales
-	}
-	walkBoxes(moov[8:], func(typ string, payload []byte) {
-		if typ != "trak" {
-			return
-		}
-		var trackID, timescale uint32
-		walkBoxes(payload, func(typ string, payload []byte) {
-			switch typ {
-			case "tkhd":
-				trackID = tkhdTrackID(payload)
-			case "mdhd":
-				timescale = mdhdTimescale(payload)
+	for len(header) >= 8 {
+		size := int64(binary.BigEndian.Uint32(header[:4]))
+		hdr := int64(8)
+		if size == 1 {
+			if len(header) < 16 {
+				return timescales
 			}
-		})
-		if trackID > 0 && timescale > 0 {
-			timescales[trackID] = timescale
+			size = int64(binary.BigEndian.Uint64(header[8:16]))
+			hdr = 16
 		}
-	})
+		if size < hdr || size > int64(len(header)) {
+			return timescales
+		}
+		if string(header[4:8]) == "moov" {
+			walkBoxes(header[hdr:size], func(typ string, payload []byte) {
+				if typ != "trak" {
+					return
+				}
+				var trackID, timescale uint32
+				walkBoxes(payload, func(typ string, payload []byte) {
+					switch typ {
+					case "tkhd":
+						trackID = tkhdTrackID(payload)
+					case "mdhd":
+						timescale = mdhdTimescale(payload)
+					}
+				})
+				if trackID > 0 && timescale > 0 {
+					timescales[trackID] = timescale
+				}
+			})
+			return timescales
+		}
+		header = header[size:]
+	}
 	return timescales
 }
 

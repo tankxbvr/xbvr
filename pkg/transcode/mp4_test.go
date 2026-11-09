@@ -171,6 +171,10 @@ func TestTrackTimescales(t *testing.T) {
 	if got[3] != 15360 {
 		t.Errorf("TrackTimescales = %v, want track 3 at 15360", got)
 	}
+	withFtyp := append(testBox("ftyp", []byte("iso5iso6mp41")), moov...)
+	if got := TrackTimescales(withFtyp); got[3] != 15360 {
+		t.Errorf("TrackTimescales after ftyp = %v, want track 3 at 15360", got)
+	}
 }
 
 func TestPatchFragmentTimesOffsetsTFDT(t *testing.T) {
