@@ -14,15 +14,17 @@ RUN yarn install --frozen-lockfile --ignore-engines --network-timeout 600000
 COPY . .
 RUN yarn build
 
-### Stage 2 — build ffmpeg with NVENC H.264/HEVC/AV1 and the x264 fallback
-# Debian's ffmpeg does not reliably expose the NVENC encoders, so build one that does.
-# The ffnvcodec headers provide the NVENC API at build time; the driver libraries are
-# injected by the NVIDIA container runtime at run time.
+### Stage 2 — build ffmpeg with NVENC, VAAPI and Quick Sync, plus the x264 fallback
+# The ffnvcodec headers provide the NVENC API at build time; the NVIDIA driver libraries
+# are injected by the NVIDIA container runtime at run time. libva/libdrm provide VAAPI,
+# and libvpl provides the Quick Sync encoders. All three are compiled into one ffmpeg;
+# which one runs is chosen at startup from the devices and encoders that probe successfully.
 FROM debian:bookworm AS ffmpeg
 ARG FFMPEG_VERSION=7.1
 ARG NV_CODEC_HEADERS_VERSION=n13.0.19.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential nasm pkg-config ca-certificates curl xz-utils libx264-dev \
+        build-essential nasm pkg-config ca-certificates curl xz-utils \
+        libx264-dev libva-dev libdrm-dev libvpl-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/${NV_CODEC_HEADERS_VERSION}.tar.gz" \
         | tar -xz -C /tmp \
@@ -35,6 +37,7 @@ RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
         --disable-debug --disable-doc --disable-ffplay \
         --enable-gpl --enable-libx264 \
         --enable-nvenc --enable-ffnvcodec \
+        --enable-vaapi --enable-libdrm --enable-libvpl \
         --enable-static --disable-shared \
         --extra-cflags="-I/usr/local/include" \
         --extra-ldflags="-L/usr/local/lib" \
@@ -42,7 +45,11 @@ RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
     && make install \
     && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q h264_nvenc \
     && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q hevc_nvenc \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q av1_nvenc
+    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q av1_nvenc \
+    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q h264_vaapi \
+    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q hevc_vaapi \
+    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q h264_qsv \
+    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q hevc_qsv
 
 ### Stage 3 — build the Go binary with the embedded UI (CGO for go-sqlite3)
 FROM golang:1.26-bookworm AS build
@@ -59,17 +66,20 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /src/ui/dist ./ui/dist
-ARG VERSION=0.4.40.10
+ARG VERSION=0.4.40.14
 RUN CGO_ENABLED=1 go build -tags=json1 \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /xbvr .
 
 ### Stage 4 — runtime (drop-in for the official image)
 FROM debian:bookworm-slim
-# python3 is used by the deploy checks and helper scripts; ffmpeg and ffprobe come from
-# the NVENC build so transcoding has H.264, HEVC and AV1 hardware encoders. ffmpeg is
-# dynamically linked so its dlopen of the NVIDIA driver libraries works.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates iproute2 libx264-164 \
+# python3 is used by the deploy checks and helper scripts. The runtime libraries cover
+# NVIDIA's dynamically loaded driver, AMD's Mesa VAAPI driver, and Intel's oneVPL/VAAPI
+# drivers. Hosts still have to pass their GPU device nodes into the container.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 ca-certificates iproute2 libx264-164 \
+        libva2 libva-drm2 libvpl2 libmfx-gen1.2 \
+        mesa-va-drivers intel-media-va-driver i965-va-driver \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
