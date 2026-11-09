@@ -69,13 +69,13 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	}
 
 	opts := transcodeOptions()
-	freeVRAM, gpuIndex := transcode.FreeVRAM()
-	plan := transcode.PlanFor(codec, opts, f.VideoWidth, f.VideoHeight, f.VideoAvgFrameRateVal, freeVRAM)
+	hw := transcode.RefreshVRAM(transcode.Detect(ffmpegBin()))
+	plan := transcode.PlanForEncoder(codec, hw, opts, f.VideoWidth, f.VideoHeight, f.VideoAvgFrameRateVal)
 	if len(plan.Notes) > 0 {
-		log.Infof("transcode %d %s: %s", f.ID, codec, strings.Join(plan.Notes, "; "))
+		log.Infof("transcode %d %s on %s: %s", f.ID, codec, plan.Label(), strings.Join(plan.Notes, "; "))
 	}
 	if plan.Unavailable {
-		log.Warnf("transcode %d %s: not enough free VRAM; refusing", f.ID, codec)
+		log.Warnf("transcode %d %s: %s; refusing", f.ID, codec, strings.Join(plan.Notes, "; "))
 		resp.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -112,8 +112,8 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	if playDuration <= 0 {
 		playDuration = f.VideoDuration
 	}
-	log.Infof("transcode request %d %s: range=%q start=%q seek=%.3f total=%d source=%.3f query=%q ua=%q",
-		f.ID, codec, req.Request.Header.Get("Range"), req.QueryParameter("start"), seek, total, f.VideoDuration,
+	log.Infof("transcode request %d %s (%s): range=%q start=%q seek=%.3f total=%d source=%.3f query=%q ua=%q",
+		f.ID, codec, plan.Label(), req.Request.Header.Get("Range"), req.QueryParameter("start"), seek, total, f.VideoDuration,
 		req.Request.URL.RawQuery, req.Request.UserAgent())
 
 	var limit int64
@@ -135,7 +135,7 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 		resp.WriteHeader(http.StatusOK)
 	}
 
-	args := transcode.Args(ffmpegBin(), f.GetPath(), seek, opts, plan, gpuIndex)
+	args := transcode.Args(ffmpegBin(), f.GetPath(), seek, opts, plan, -1)
 	cmd := exec.CommandContext(req.Request.Context(), args[0], args[1:]...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -178,8 +178,8 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 	}
 }
 
-// ffmpegBin prefers an ffmpeg on PATH, which in the container is the build made with NVENC and
-// all the encoders; it falls back to the bundled download when there is none.
+// ffmpegBin prefers an ffmpeg on PATH, which in the container is the build made with NVENC,
+// VAAPI, Quick Sync and x264; it falls back to the bundled download when there is none.
 func ffmpegBin() string {
 	if path, err := exec.LookPath("ffmpeg"); err == nil {
 		return path
