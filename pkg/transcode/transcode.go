@@ -63,6 +63,15 @@ func CodecLabel(codec string) string {
 	}
 }
 
+const (
+	// defaultGOPFPS sizes the keyframe interval when the source frame rate is unknown.
+	defaultGOPFPS = 60
+
+	// initialBurstSeconds is how much of the input is encoded ahead of realtime after a start
+	// or seek, so playback resumes without waiting for a realtime-paced buffer to fill.
+	initialBurstSeconds = 6
+)
+
 // Options describe a live encode.
 type Options struct {
 	BitrateMbps int // target video bitrate
@@ -124,6 +133,9 @@ type Plan struct {
 	Scale       bool
 	Unavailable bool
 	Notes       []string
+
+	GOP          int  // frames between keyframes; 0 leaves it to the encoder
+	InitialBurst bool // ffmpeg can read the start of the input ahead of realtime
 }
 
 // Label names the stream for clients that show the codec and encoder.
@@ -258,7 +270,7 @@ func PlanForEncoder(codec string, hw Hardware, opts Options, srcWidth, srcHeight
 		}
 	}
 	cap := capabilityFor(backend.Name, codec)
-	p := Plan{Codec: codec, Encoder: backend.Encoder(codec), Backend: backend}
+	p := Plan{Codec: codec, Encoder: backend.Encoder(codec), Backend: backend, InitialBurst: hw.InitialBurst}
 
 	width, height := srcWidth, srcHeight
 	if width > 0 && height > 0 {
@@ -321,6 +333,11 @@ func PlanForEncoder(codec string, hw Hardware, opts Options, srcWidth, srcHeight
 	if target > 0 && target != math.Round(srcFPS*100)/100 {
 		p.FPS = target
 	}
+	gopFPS := target
+	if gopFPS <= 0 {
+		gopFPS = defaultGOPFPS
+	}
+	p.GOP = int(math.Round(ChunkSeconds * gopFPS))
 	return p
 }
 
@@ -405,7 +422,7 @@ func even(n int) int {
 }
 
 // Args returns the ffmpeg arguments that stream path as fragmented MP4 on stdout, starting at
-// seekSeconds. -re paces the encode at playback speed, so a long file is not encoded ahead of
+// seekSeconds. The encode is paced at playback speed, so a long file is not encoded ahead of
 // the player. gpuIndex overrides the plan's NVENC GPU when it is not negative.
 func Args(ffmpegPath, path string, seekSeconds float64, opts Options, p Plan, gpuIndex int) []string {
 	if gpuIndex >= 0 {
@@ -445,7 +462,11 @@ func inputArgs(ffmpegPath, path string, seekSeconds float64, p Plan, paced bool)
 	}
 	args = append(args, p.Backend.preInputArgs()...)
 	if paced {
-		args = append(args, "-re")
+		if p.InitialBurst {
+			args = append(args, "-readrate", "1", "-readrate_initial_burst", strconv.Itoa(initialBurstSeconds))
+		} else {
+			args = append(args, "-re")
+		}
 	}
 	args = append(args, "-i", path)
 	return args
@@ -474,6 +495,10 @@ func videoArgs(opts Options, p Plan) []string {
 		} else if p.Backend.GPUIndex == 0 {
 			args = append(args, "-gpu", "0")
 		}
+	}
+
+	if p.GOP > 0 {
+		args = append(args, "-g", strconv.Itoa(p.GOP))
 	}
 
 	args = append(args,

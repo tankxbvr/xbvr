@@ -124,6 +124,10 @@ type Hardware struct {
 	Available []Backend `json:"available"`
 	FFmpeg    string    `json:"ffmpeg,omitempty"`
 	Notes     []string  `json:"notes,omitempty"`
+
+	// InitialBurst reports that this ffmpeg can read ahead of realtime at the start of an
+	// input. Older builds reject the option outright.
+	InitialBurst bool `json:"-"`
 }
 
 // BackendFor picks the first usable backend for codec, preferring the overall best one.
@@ -235,8 +239,14 @@ func resolveFFmpeg(path string) string {
 	return "ffmpeg"
 }
 
+// supportsInitialBurst reports whether ffmpeg accepts -readrate_initial_burst.
+func supportsInitialBurst(ffmpegPath string) bool {
+	out, err := exec.Command(ffmpegPath, "-hide_banner", "-h", "long").CombinedOutput()
+	return err == nil && strings.Contains(string(out), "readrate_initial_burst")
+}
+
 func probeHardware(ffmpegPath string) Hardware {
-	hw := Hardware{FFmpeg: ffmpegPath}
+	hw := Hardware{FFmpeg: ffmpegPath, InitialBurst: supportsInitialBurst(ffmpegPath)}
 	encoders, err := listEncoders(ffmpegPath)
 	if err != nil {
 		hw.Notes = append(hw.Notes, "Could not list ffmpeg encoders: "+err.Error())

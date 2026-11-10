@@ -276,14 +276,20 @@ func mdhdTimescale(payload []byte) uint32 {
 // maxMoofSize bounds the fragment header held in memory while timestamps are shifted.
 const maxMoofSize = 64 << 20
 
+// BoxObserver is told where top-level boxes begin and end in a stream being written, so that
+// extra boxes can be inserted without splitting one.
+type BoxObserver interface {
+	BoxStart()
+	BoxEnd()
+}
+
 // PatchFragmentTimes copies a fragmented MP4 stream and shifts every fragment's tfdt box by
-// offsetSeconds. A fresh encode starts its timestamps at zero; without this shift a player
-// that seeks by byte range sees the new segment as the start of the video and resets its
-// position. moov is the header already returned by ReadMP4Header.
+// offsetSeconds. A fresh encode starts its timestamps at zero, so the shift places each encode
+// at its real position in the source. moov is the header already returned by ReadMP4Header.
 func PatchFragmentTimes(r io.Reader, w io.Writer, moov []byte, offsetSeconds float64) error {
-	if offsetSeconds <= 0 {
-		_, err := io.Copy(w, r)
-		return err
+	boxStart, boxEnd := func() {}, func() {}
+	if observer, ok := w.(BoxObserver); ok {
+		boxStart, boxEnd = observer.BoxStart, observer.BoxEnd
 	}
 	timescales := TrackTimescales(moov)
 	for {
@@ -294,6 +300,7 @@ func PatchFragmentTimes(r io.Reader, w io.Writer, moov []byte, offsetSeconds flo
 		if err != nil {
 			return err
 		}
+		boxStart()
 		if size == 0 {
 			// A zero-sized box runs to the end of the stream.
 			if _, err := w.Write(header); err != nil {
@@ -322,6 +329,7 @@ func PatchFragmentTimes(r io.Reader, w io.Writer, moov []byte, offsetSeconds flo
 			if _, err := w.Write(body); err != nil {
 				return err
 			}
+			boxEnd()
 			continue
 		}
 		if _, err := w.Write(header); err != nil {
@@ -332,6 +340,7 @@ func PatchFragmentTimes(r io.Reader, w io.Writer, moov []byte, offsetSeconds flo
 				return err
 			}
 		}
+		boxEnd()
 	}
 }
 
