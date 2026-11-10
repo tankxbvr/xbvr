@@ -2,14 +2,17 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/emicklei/go-restful/v3"
 
@@ -20,8 +23,9 @@ import (
 	"github.com/xbapps/xbvr/pkg/transcode"
 )
 
-// getTranscode streams a live ffmpeg encode. Clients that show a file size are given the
-// estimated size of the stream rather than a size on disk, since the encode has no file.
+// getTranscode streams a live ffmpeg encode as though it were a seekable file. The stream has
+// a fixed byte layout with a seek index, so a byte range names either a position in the index,
+// which starts a new encode at that time, or the continuation of the running encode.
 func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) {
 	if !config.Config.Interfaces.Heresphere.TranscodeEnabled {
 		resp.WriteHeader(http.StatusNotFound)
@@ -69,69 +73,68 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 		return
 	}
 
-	opts := transcodeOptions()
-	hw := transcode.RefreshVRAM(transcode.Detect(ffmpegBin()))
-	plan := transcode.PlanForEncoder(codec, hw, opts, f.VideoWidth, f.VideoHeight, f.VideoAvgFrameRateVal)
-	if len(plan.Notes) > 0 {
-		log.Infof("transcode %d %s on %s: %s", f.ID, codec, plan.Label(), strings.Join(plan.Notes, "; "))
+	if f.VideoDuration <= 0 {
+		resp.WriteHeader(http.StatusNotFound)
+		return
 	}
-	if plan.Unavailable {
-		log.Warnf("transcode %d %s: %s; refusing", f.ID, codec, strings.Join(plan.Notes, "; "))
+	opts := transcodeOptions()
+	layout, err := transcode.NewLayout(f.VideoDuration, opts)
+	if err != nil {
+		log.Warnf("transcode %d: %v", f.ID, err)
+		resp.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	rangeHeader := req.Request.Header.Get("Range")
+	start, end, hasRange := parseByteRange(rangeHeader, layout.Total)
+	if !hasRange && rangeBeyondEnd(rangeHeader, layout.Total) {
+		resp.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", layout.Total))
+		resp.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	offset := int64(0)
+	if hasRange {
+		offset = start
+	}
+
+	source := transcode.Source{
+		Key: fmt.Sprintf("%s/%d/%s/%d/%d/%d", transcodeClient(req.Request), f.ID, codec,
+			opts.BitrateMbps, opts.AudioKbps, opts.MaxHeight),
+		Duration: f.VideoDuration,
+		Layout:   layout,
+		Prepare:  func() (transcode.Spawner, error) { return prepareTranscode(f, codec, opts) },
+	}
+	playback, err := transcodeStreams.Open(req.Request.Context(), source, offset)
+	if errors.Is(err, transcode.ErrUnavailable) {
 		resp.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	total := opts.VirtualSize(f.VideoDuration)
-	if total <= 0 {
-		total = f.Size
+	if errors.Is(err, transcode.ErrCannotResume) {
+		log.Warnf("transcode %d %s: range %q cannot be resumed", f.ID, codec, rangeHeader)
+		resp.WriteHeader(http.StatusServiceUnavailable)
+		return
 	}
-
-	start, end, hasRange := parseByteRange(req.Request.Header.Get("Range"), total)
-	seek := 0.0
-	if hasRange && total > 0 && f.VideoDuration > 0 {
-		seek = f.VideoDuration * float64(start) / float64(total)
-		if seek >= f.VideoDuration {
-			seek = f.VideoDuration - 0.1
-		}
+	if req.Request.Context().Err() != nil {
+		return
 	}
-	// A client may ask for a new encode from a time instead of a byte range. HereSphere
-	// appends start=<seconds> when it seeks a server-side transcode.
-	if s, ok := queryStart(req); ok {
-		// HereSphere uses seconds; a value far beyond the length is treated as milliseconds.
-		if f.VideoDuration > 0 && s > f.VideoDuration*1.5 {
-			s /= 1000
-		}
-		seek = s
-		hasRange = false
-		if seek >= f.VideoDuration {
-			seek = f.VideoDuration - 0.1
-		}
+	if err != nil {
+		log.Errorf("transcode %d %s: %v", f.ID, codec, err)
+		resp.WriteHeader(http.StatusInternalServerError)
+		return
 	}
-	if seek < 0 {
-		seek = 0
-	}
-	playDuration := f.VideoDuration - seek
-	if playDuration <= 0 {
-		playDuration = f.VideoDuration
-	}
-	duration := f.VideoDuration
-	if duration <= 0 {
-		duration = playDuration
-	}
-	log.Infof("transcode request %d %s (%s): range=%q start=%q seek=%.3f total=%d source=%.3f query=%q ua=%q",
-		f.ID, codec, plan.Label(), req.Request.Header.Get("Range"), req.QueryParameter("start"), seek, total, f.VideoDuration,
-		req.Request.URL.RawQuery, req.Request.UserAgent())
+	defer playback.Close()
+	log.Infof("transcode %d %s: %s range=%q chunk=%d seek=%.3f ua=%q",
+		f.ID, codec, playback.Kind, rangeHeader, playback.Chunk, playback.Seek, req.Request.UserAgent())
 
 	var limit int64
 	h := resp.Header()
 	h.Set("Content-Type", "video/mp4")
 	h.Set("Accept-Ranges", "bytes")
 	h.Set("Cache-Control", "no-store")
-	h.Set("Content-Duration", strconv.FormatFloat(duration, 'f', 3, 64))
+	h.Set("Content-Duration", strconv.FormatFloat(f.VideoDuration, 'f', 3, 64))
 	if hasRange {
-		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
-		// An open-ended range runs to the end of the stream; a bounded one stops after the
-		// requested bytes. The virtual size maps a byte offset to an approximate time.
-		if end < total-1 {
+		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, layout.Total))
+		if end < layout.Total-1 {
 			limit = end - start + 1
 			h.Set("Content-Length", strconv.FormatInt(limit, 10))
 		}
@@ -140,63 +143,92 @@ func (i DMSResource) getTranscode(req *restful.Request, resp *restful.Response) 
 		resp.WriteHeader(http.StatusOK)
 	}
 
-	args := transcode.Args(ffmpegBin(), f.GetPath(), seek, opts, plan, -1)
-	cmd := exec.CommandContext(req.Request.Context(), args[0], args[1:]...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Errorf("transcode %d: %v", f.ID, err)
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		log.Errorf("transcode %d: starting ffmpeg: %v", f.ID, err)
-		return
-	}
-
-	// ffmpeg's fragmented MP4 header has a zero duration, so players treat it as a live
-	// stream with no length. Write the known length into the header before streaming it.
-	header, headerErr := transcode.ReadMP4Header(stdout, duration)
-	if headerErr != nil {
-		log.Warnf("transcode %d: mp4 header: %v", f.ID, headerErr)
-	}
+	// Headers go out before the encoder has produced anything, so the client's connection
+	// timeout does not include encoder startup.
 	writer := &flushWriter{w: resp.ResponseWriter}
-	written := int64(0)
-	headerComplete := true
-	if limit > 0 && int64(len(header)) > limit {
-		header = header[:limit]
-		headerComplete = false
+	if flusher, ok := resp.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
 	}
-	if len(header) > 0 {
-		n, _ := writer.Write(header)
-		written = int64(n)
-	}
-
 	dest := io.Writer(writer)
 	if limit > 0 {
-		remaining := limit - written
-		if remaining < 0 {
-			remaining = 0
+		dest = &limitedWriter{w: writer, remaining: limit}
+	}
+
+	began := time.Now()
+	sent, streamErr := playback.WriteTo(req.Request.Context(), dest)
+	if errors.Is(streamErr, io.ErrShortWrite) {
+		streamErr = nil
+	}
+	log.Infof("transcode %d %s: %s sent %d bytes in %s (%v)",
+		f.ID, codec, playback.Kind, sent, time.Since(began).Round(time.Millisecond), streamErr)
+	if streamFailed(req.Request.Context(), streamErr) {
+		// Returning normally would end the chunked body cleanly, which a player reads as the
+		// end of the video. Breaking the connection makes it retry instead.
+		panic(http.ErrAbortHandler)
+	}
+}
+
+// streamFailed reports whether a response ended early for a reason the client did not cause.
+func streamFailed(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil
+}
+
+// transcodeClient identifies a viewer, so two viewers of the same file get separate encodes.
+func transcodeClient(req *http.Request) string {
+	if ip := strings.TrimSpace(req.Header.Get("X-Real-IP")); ip != "" {
+		return ip
+	}
+	if forwarded := req.Header.Get("X-Forwarded-For"); forwarded != "" {
+		first, _, _ := strings.Cut(forwarded, ",")
+		return strings.TrimSpace(first)
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return req.RemoteAddr
+	}
+	return host
+}
+
+// transcodeStreams holds the running encodes for every file and codec.
+var transcodeStreams = transcode.NewManager(func(format string, args ...interface{}) {
+	log.Warnf(format, args...)
+})
+
+// prepareTranscode chooses the encoder for a stream. Its plan, including the output size, then
+// stays fixed for every encode of that stream, so seeks cannot change the picture format.
+func prepareTranscode(f models.File, codec string, opts transcode.Options) (transcode.Spawner, error) {
+	hw := transcode.RefreshVRAM(transcode.Detect(ffmpegBin()))
+	plan := transcode.PlanForEncoder(codec, hw, opts, f.VideoWidth, f.VideoHeight, f.VideoAvgFrameRateVal)
+	if len(plan.Notes) > 0 {
+		log.Infof("transcode %d %s on %s: %s", f.ID, codec, plan.Label(), strings.Join(plan.Notes, "; "))
+	}
+	if plan.Unavailable {
+		log.Warnf("transcode %d %s: %s; refusing", f.ID, codec, strings.Join(plan.Notes, "; "))
+		return nil, transcode.ErrUnavailable
+	}
+	path := f.GetPath()
+	return func(ctx context.Context, seekSeconds float64) (*transcode.Process, error) {
+		args := transcode.Args(ffmpegBin(), path, seekSeconds, opts, plan, -1)
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, err
 		}
-		dest = &limitedWriter{w: writer, remaining: remaining}
-	}
-	var streamErr error
-	if seek > 0 && headerErr == nil && headerComplete {
-		// A range seek starts a new encode at seek. Shift its fragment timestamps to the
-		// requested time so the player keeps the seek position instead of restarting at zero.
-		streamErr = transcode.PatchFragmentTimes(stdout, dest, header, seek)
-	} else {
-		_, streamErr = io.Copy(dest, stdout)
-	}
-	if limit > 0 {
-		// The rest of the encode is no longer wanted; stop ffmpeg rather than block on it.
-		cmd.Process.Kill()
-	} else if streamErr != nil && !errors.Is(streamErr, io.ErrShortWrite) && req.Request.Context().Err() == nil {
-		log.Warnf("transcode %d: stream: %v", f.ID, streamErr)
-	}
-	if err := cmd.Wait(); err != nil && req.Request.Context().Err() == nil && limit == 0 {
-		log.Warnf("transcode %d: ffmpeg: %v: %s", f.ID, err, strings.TrimSpace(stderr.String()))
-	}
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("starting ffmpeg: %w", err)
+		}
+		return &transcode.Process{
+			Stdout: stdout,
+			Wait: func() error {
+				if err := cmd.Wait(); err != nil {
+					return fmt.Errorf("ffmpeg: %w: %s", err, strings.TrimSpace(stderr.String()))
+				}
+				return nil
+			},
+		}, nil
+	}, nil
 }
 
 // limitedWriter stops a stream at a byte count without buffering the rest of the encode.
@@ -285,14 +317,13 @@ func parseByteRange(header string, total int64) (start, end int64, ok bool) {
 	return start, end, true
 }
 
-// queryStart returns the last usable start value. Repeated start parameters are taken from
-// the end, since a client may append its own start to a URL that already carries one.
-func queryStart(req *restful.Request) (float64, bool) {
-	values := req.Request.URL.Query()["start"]
-	for i := len(values) - 1; i >= 0; i-- {
-		if s, err := strconv.ParseFloat(values[i], 64); err == nil && s >= 0 {
-			return s, true
-		}
+// rangeBeyondEnd reports whether a byte range header asks for a position past the stream.
+func rangeBeyondEnd(header string, total int64) bool {
+	spec, found := strings.CutPrefix(strings.TrimSpace(header), "bytes=")
+	if !found {
+		return false
 	}
-	return 0, false
+	first, _, _ := strings.Cut(spec, "-")
+	start, err := strconv.ParseInt(strings.TrimSpace(first), 10, 64)
+	return err == nil && start >= total
 }
