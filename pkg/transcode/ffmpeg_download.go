@@ -219,6 +219,11 @@ func installJellyfinFFmpeg(binDir, final string, asset jellyfinAsset) error {
 		return err
 	}
 	defer os.RemoveAll(staging)
+	// MkdirTemp creates the folder private to its owner; the installed folder is readable
+	// like the rest of the bin folder.
+	if err := os.Chmod(staging, 0o755); err != nil {
+		return err
+	}
 
 	exe := filepath.Join(staging, jellyfinExe("ffmpeg"))
 	if err := extractFFmpeg(archive, asset.name, exe); err != nil {

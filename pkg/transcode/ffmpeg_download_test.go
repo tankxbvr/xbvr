@@ -135,6 +135,9 @@ func TestEnsureManagedFFmpegInstallsFromTarXZ(t *testing.T) {
 	if info, _ := os.Stat(path); info.Mode().Perm()&0o100 == 0 {
 		t.Fatalf("installed ffmpeg is not executable: %v", info.Mode())
 	}
+	if info, _ := os.Stat(filepath.Dir(path)); info.Mode().Perm() != 0o755 {
+		t.Fatalf("install folder mode = %v, want 0755", info.Mode().Perm())
+	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "ffprobe")); !os.IsNotExist(err) {
 		t.Fatalf("only ffmpeg should be installed, ffprobe stat err = %v", err)
 	}
