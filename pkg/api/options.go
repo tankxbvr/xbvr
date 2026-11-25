@@ -200,6 +200,7 @@ type RequestSaveOptionsTaskSchedule struct {
 	OrganizeHourStart          int  `json:"organizeHourStart"`
 	OrganizeHourEnd            int  `json:"organizeHourEnd"`
 	OrganizeStartDelay         int  `json:"organizeStartDelay"`
+	OrganizeApply              bool `json:"organizeApply"`
 	RecommendationEnabled      bool `json:"recommendationEnabled"`
 	RecommendationHourInterval int  `json:"recommendationHourInterval"`
 	RecommendationUseRange     bool `json:"recommendationUseRange"`
@@ -1074,6 +1075,7 @@ func (i ConfigResource) saveOptionsTaskSchedule(req *restful.Request, resp *rest
 	config.Config.Cron.OrganizeSchedule.HourStart = r.OrganizeHourStart
 	config.Config.Cron.OrganizeSchedule.HourEnd = r.OrganizeHourEnd
 	config.Config.Cron.OrganizeSchedule.RunAtStartDelay = r.OrganizeStartDelay
+	config.Config.Organize.ScheduleApply = r.OrganizeApply
 	config.Config.Cron.RecommendationSchedule.Enabled = r.RecommendationEnabled
 	config.Config.Cron.RecommendationSchedule.HourInterval = r.RecommendationHourInterval
 	config.Config.Cron.RecommendationSchedule.UseRange = r.RecommendationUseRange

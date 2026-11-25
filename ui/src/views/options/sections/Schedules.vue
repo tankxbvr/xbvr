@@ -254,12 +254,20 @@
           </div>
             <div v-if="activeTab == 6">
               <h4>{{$t("Organize Files")}}</h4>
-              <p>Computes the reorganisation plan on a schedule (dry-run only) and logs it — nothing is
-                 moved automatically. Review and Apply from Options → Organize files. Skips while you're
-                 watching. Changes apply after a restart.</p>
+              <p>Runs Organize files on a schedule with the settings from Options → Organize files.
+                 The interval counts from the last scheduled run, so restarts don't delay it. Skips while
+                 you're watching and tries again 10 minutes later. Schedule changes apply after a restart.</p>
               <b-field>
                 <b-switch v-model="organizeEnabled">Enable schedule</b-switch>
               </b-field>
+              <b-field v-if="organizeEnabled">
+                <b-switch v-model="organizeApply" type="is-danger">Apply changes</b-switch>
+              </b-field>
+              <p v-if="organizeEnabled" class="help">
+                <span v-if="organizeApply">Scheduled runs move and rename files, and delete byte-identical
+                  duplicates when that's turned on in Organize files.</span>
+                <span v-else>Scheduled runs only work out the plan; review and Apply it from Options → Organize files.</span>
+              </p>
               <b-field v-if="organizeEnabled">
                 <b-slider v-model="organizeHourInterval" :min="1" :max="72" :step="1"></b-slider>
                 <div class="column is-one-third" style="margin-left:.75em">{{`Run every ${this.organizeHourInterval} hour${this.organizeHourInterval > 1 ? 's': ''}`}}</div>
@@ -359,6 +367,7 @@ export default {
       organizeEnabled: false,
       organizeHourInterval: 24,
       organizeStartDelay: 0,
+      organizeApply: false,
       recommendationEnabled: true,
       recommendationHourInterval: 24,
       recommendationStartDelay: 0,
@@ -496,6 +505,9 @@ export default {
             this.organizeHourInterval = data.config.cron.organizeSchedule.hourInterval
             this.organizeStartDelay = data.config.cron.organizeSchedule.runAtStartDelay
           }
+          if (data.config.organize) {
+            this.organizeApply = data.config.organize.scheduleApply === true
+          }
           if (data.config.cron.recommendationSchedule) {
             this.recommendationEnabled = data.config.cron.recommendationSchedule.enabled
             this.recommendationHourInterval = data.config.cron.recommendationSchedule.hourInterval
@@ -577,6 +589,7 @@ export default {
           organizeHourStart: 0,
           organizeHourEnd: 23,
           organizeStartDelay: this.organizeStartDelay,
+          organizeApply: this.organizeApply,
           recommendationEnabled: this.recommendationEnabled,
           recommendationHourInterval: this.recommendationHourInterval,
           recommendationUseRange: false,
