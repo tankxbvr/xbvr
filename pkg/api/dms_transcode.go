@@ -331,27 +331,52 @@ func withGPUDecode(plan transcode.Plan, f models.File) transcode.Plan {
 	})
 }
 
-// sourcePixFmts caches each file's video pixel format by path and size.
+// pixFmtLookup is one ffprobe read of a file's pixel format, shared by everyone asking for it.
+type pixFmtLookup struct {
+	once   sync.Once
+	pixFmt string
+	ok     bool
+}
+
+// sourcePixFmts holds a *pixFmtLookup per file, keyed by size and path.
 var sourcePixFmts sync.Map
 
 // sourcePixFmt returns the pixel format of the file's first video stream, or "" if ffprobe
-// cannot read it.
+// cannot read it. A read that is already running for the file is waited for rather than
+// repeated, and a failed read is tried again next time.
 func sourcePixFmt(f models.File) string {
 	path := f.GetPath()
 	key := fmt.Sprintf("%d|%s", f.Size, path)
-	if cached, ok := sourcePixFmts.Load(key); ok {
-		return cached.(string)
+	value, _ := sourcePixFmts.LoadOrStore(key, &pixFmtLookup{})
+	lookup := value.(*pixFmtLookup)
+	lookup.once.Do(func() {
+		data, err := ffprobe.GetProbeData(path, 10*time.Second)
+		if err != nil {
+			log.Warnf("transcode %d: could not read the pixel format: %v", f.ID, err)
+			return
+		}
+		if stream := data.GetFirstVideoStream(); stream != nil {
+			lookup.pixFmt = stream.PixFmt
+		}
+		lookup.ok = true
+	})
+	if !lookup.ok {
+		sourcePixFmts.CompareAndDelete(key, lookup)
 	}
-	data, err := ffprobe.GetProbeData(path, 5*time.Second)
-	if err != nil {
-		return ""
+	return lookup.pixFmt
+}
+
+// prefetchSourcePixFmt reads a file's pixel format in the background when a player asks for
+// its scene, so a stream started soon after does not wait for ffprobe.
+func prefetchSourcePixFmt(f models.File) {
+	if !config.Config.Interfaces.Heresphere.TranscodeEnabled || f.VideoDuration <= 0 || transcodeFFmpegPending() {
+		return
 	}
-	pixFmt := ""
-	if stream := data.GetFirstVideoStream(); stream != nil {
-		pixFmt = stream.PixFmt
-	}
-	sourcePixFmts.Store(key, pixFmt)
-	return pixFmt
+	go func() {
+		if transcode.Detect(ffmpegBin()).MayDecodeOnGPU(f.VideoCodecName) {
+			sourcePixFmt(f)
+		}
+	}()
 }
 
 // releaseOnOutput calls release once ffmpeg writes anything. ffmpeg writes its header only after

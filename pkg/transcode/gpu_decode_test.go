@@ -186,3 +186,27 @@ func TestListsName(t *testing.T) {
 		t.Error("scale_cuda not found in the filter listing")
 	}
 }
+
+func TestGPUDecodeExplainsCPUDecoding(t *testing.T) {
+	cases := map[string]SourceVideo{
+		"could not be read": {Codec: "hevc", Width: 5760, Height: 2880},
+		"no scale_cuda":     {Codec: "hevc", Width: 5760, Height: 2880, PixFmt: "yuv420p10le"},
+		"only 4:2:0":        {Codec: "hevc", Width: 5760, Height: 2880, PixFmt: "yuv422p"},
+	}
+	for want, src := range cases {
+		p := planGPUDecode(CodecHEVC, gpuDecodeHardware(0, false), src)
+		if notes := strings.Join(p.Notes, " "); p.Decoder != "" || !strings.Contains(notes, want) {
+			t.Errorf("%+v: decoder %q, notes %q; want CPU decoding explained with %q", src, p.Decoder, notes, want)
+		}
+	}
+}
+
+func TestHardwareMayDecodeOnGPU(t *testing.T) {
+	hw := gpuDecodeHardware(0, false)
+	if !hw.MayDecodeOnGPU("HEVC") || hw.MayDecodeOnGPU("av1") {
+		t.Errorf("MayDecodeOnGPU: hevc %v, av1 %v; want true, false", hw.MayDecodeOnGPU("HEVC"), hw.MayDecodeOnGPU("av1"))
+	}
+	if (Hardware{}).MayDecodeOnGPU("hevc") {
+		t.Error("no hardware should decode nothing on the GPU")
+	}
+}

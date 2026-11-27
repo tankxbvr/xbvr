@@ -447,7 +447,15 @@ func (p Plan) WithGPUDecode(src SourceVideo) Plan {
 		return p
 	}
 	highBitDepth, chroma420 := sourceFormat(src.PixFmt)
-	if !chroma420 || (highBitDepth && !p.Backend.ConvertOnGPU) {
+	switch {
+	case !chroma420:
+		p.Notes = append(p.Notes, fmt.Sprintf("decoding on the CPU; the GPU decodes only 4:2:0 video, not %s", src.PixFmt))
+		return p
+	case highBitDepth && !p.Backend.ConvertOnGPU && src.PixFmt == "":
+		p.Notes = append(p.Notes, "decoding on the CPU; the source's pixel format could not be read")
+		return p
+	case highBitDepth && !p.Backend.ConvertOnGPU:
+		p.Notes = append(p.Notes, fmt.Sprintf("decoding on the CPU; this ffmpeg has no scale_cuda filter to convert %s on the GPU", src.PixFmt))
 		return p
 	}
 	need := decodeVRAMNeedMiB(src.Width, src.Height, highBitDepth)

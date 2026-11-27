@@ -152,6 +152,17 @@ func (h Hardware) BackendFor(codec string) (Backend, bool) {
 	return Backend{}, false
 }
 
+// MayDecodeOnGPU reports whether an NVENC backend has a GPU decoder for sources in codec.
+func (h Hardware) MayDecodeOnGPU(codec string) bool {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	for _, b := range h.Available {
+		if b.Name == BackendNVENC && b.Decoders[codec] != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Codecs returns the codecs available through the preferred backend. It is used for
 // diagnostics and for deciding whether the option should be offered at all.
 func (h Hardware) Codecs() []string {

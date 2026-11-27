@@ -246,6 +246,9 @@ func (i HeresphereResource) getHeresphereFile(req *restful.Request, resp *restfu
 	for _, tr := range heresphereTranscodeMedia(req, file, "", dnt) {
 		media = append(media, tr)
 	}
+	if requestData.NeedsMediaSource.OrElse(true) {
+		prefetchSourcePixFmt(file)
+	}
 
 	video := HeresphereVideo{
 		Access:               1,
@@ -369,6 +372,9 @@ func (i HeresphereResource) getHeresphereScene(req *restful.Request, resp *restf
 		}
 		for _, tr := range heresphereTranscodeMedia(req, file, streamPrefix, dnt) {
 			media = append(media, tr)
+		}
+		if requestData.NeedsMediaSource.OrElse(true) {
+			prefetchSourcePixFmt(file)
 		}
 		videoLength = file.VideoDuration
 	}
