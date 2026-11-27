@@ -464,7 +464,8 @@ func (p Plan) WithGPUDecode(src SourceVideo) Plan {
 	}
 	need := decodeVRAMNeedMiB(src.Width, src.Height, p.Width, p.Height, highBitDepth)
 	if free := p.freeVRAM(); free > 0 && vramNeedMiB(p.Codec, p.Width, p.Height)+need+vramSafetyMiB > free {
-		p.Notes = append(p.Notes, fmt.Sprintf("decoding on the CPU; decoding on the GPU needs about %d MiB more than the %d MiB free", need, free))
+		total := vramNeedMiB(p.Codec, p.Width, p.Height) + need + vramSafetyMiB
+		p.Notes = append(p.Notes, fmt.Sprintf("decoding on the CPU; decoding and encoding on the GPU needs about %d MiB, but %d MiB is free", total, free))
 		return p
 	}
 	p.Decoder = p.Backend.Decoders[strings.ToLower(strings.TrimSpace(src.Codec))]
