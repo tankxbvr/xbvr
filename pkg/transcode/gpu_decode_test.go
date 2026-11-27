@@ -29,7 +29,7 @@ func TestGPUDecodeChosenForEightBitHEVC(t *testing.T) {
 		t.Fatalf("decoder = %q, want hevc_cuvid: %v", p.Decoder, p.Notes)
 	}
 	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 30, Options{}, p, -1), " ")
-	for _, want := range []string{"-hwaccel cuda -hwaccel_device 1 -hwaccel_output_format cuda -c:v hevc_cuvid", "-c:v hevc_nvenc"} {
+	for _, want := range []string{"-xerror -hwaccel cuda -hwaccel_device 1 -hwaccel_output_format cuda -c:v hevc_cuvid", "-c:v hevc_nvenc"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args missing %q: %s", want, args)
 		}
@@ -63,7 +63,7 @@ func TestGPUDecodeResizesInTheDecoder(t *testing.T) {
 func TestCPUDecodeRestoresCPUFilters(t *testing.T) {
 	p := planGPUDecode(CodecH264, gpuDecodeHardware(0, true), SourceVideo{Codec: "hevc", Width: 8192, Height: 4096, PixFmt: "yuv420p"}).CPUDecode()
 	args := strings.Join(Args("ffmpeg", "/videos/scene.mp4", 0, Options{}, p, -1), " ")
-	if strings.Contains(args, "cuvid") || strings.Contains(args, "-hwaccel") || strings.Contains(args, "-resize") {
+	if strings.Contains(args, "cuvid") || strings.Contains(args, "-hwaccel") || strings.Contains(args, "-resize") || strings.Contains(args, "-xerror") {
 		t.Errorf("CPU decode still selects the GPU decoder: %s", args)
 	}
 	for _, want := range []string{"scale=4096:2048", "-pix_fmt yuv420p"} {
@@ -116,7 +116,7 @@ func TestGPUDecodeSkipsUnsupportedSources(t *testing.T) {
 func TestGPUDecodeNeedsVRAMForDecoderAndEncoder(t *testing.T) {
 	src := SourceVideo{Codec: "hevc", Width: 8192, Height: 4096, PixFmt: "yuv420p"}
 	encodeOnly := vramNeedMiB(CodecHEVC, 8192, 4096) + vramSafetyMiB
-	decode := decodeVRAMNeedMiB(8192, 4096, false)
+	decode := decodeVRAMNeedMiB(8192, 4096, 8192, 4096, false)
 
 	tight := planGPUDecode(CodecHEVC, gpuDecodeHardware(encodeOnly+decode-1, false), src)
 	if tight.Decoder != "" {
@@ -141,7 +141,7 @@ func TestReserveVRAMIncludesGPUDecode(t *testing.T) {
 	release := p.ReserveVRAM()
 	got := pendingVRAMByGPU()[1]
 	release()
-	want := vramNeedMiB(CodecHEVC, 8192, 4096) + decodeVRAMNeedMiB(8192, 4096, false)
+	want := vramNeedMiB(CodecHEVC, 8192, 4096) + decodeVRAMNeedMiB(8192, 4096, 8192, 4096, false)
 	if got != want {
 		t.Errorf("reserved %d MiB, want encoder and decoder %d MiB", got, want)
 	}
@@ -208,5 +208,38 @@ func TestHardwareMayDecodeOnGPU(t *testing.T) {
 	}
 	if (Hardware{}).MayDecodeOnGPU("hevc") {
 		t.Error("no hardware should decode nothing on the GPU")
+	}
+}
+
+// The free memory of a GPU shared with another program, with the measured peak of each encode
+// while its output was blocked. The plan must not pick GPU decoding where that peak, plus the
+// safety margin, does not fit.
+func TestGPUDecodeEstimatesCoverMeasuredPeaks(t *testing.T) {
+	cases := []struct {
+		codec   string
+		src     SourceVideo
+		peakMiB int
+	}{
+		{CodecH264, SourceVideo{Codec: "hevc", Width: 8192, Height: 4096, PixFmt: "yuv420p"}, 2369},
+		{CodecH264, SourceVideo{Codec: "hevc", Width: 7200, Height: 3600, PixFmt: "yuv420p"}, 2115},
+		{CodecH264, SourceVideo{Codec: "h264", Width: 5760, Height: 2880, PixFmt: "yuv420p"}, 1849},
+		{CodecHEVC, SourceVideo{Codec: "h264", Width: 5760, Height: 2880, PixFmt: "yuv420p"}, 2138},
+		{CodecHEVC, SourceVideo{Codec: "h264", Width: 3840, Height: 1920, PixFmt: "yuv420p"}, 1325},
+		{CodecH264, SourceVideo{Codec: "h264", Width: 3840, Height: 1920, PixFmt: "yuv420p"}, 1485},
+	}
+	for _, c := range cases {
+		p := planGPUDecode(c.codec, gpuDecodeHardware(0, false), c.src)
+		if p.Decoder == "" {
+			t.Fatalf("%s from %dx%d: no GPU decoder chosen", c.codec, c.src.Width, c.src.Height)
+		}
+		if est := vramNeedMiB(p.Codec, p.Width, p.Height) + p.decodeVRAMMiB; est < c.peakMiB {
+			t.Errorf("%s from %dx%d to %dx%d: estimate %d MiB is below the measured %d MiB", c.codec, c.src.Width, c.src.Height, p.Width, p.Height, est, c.peakMiB)
+		}
+	}
+	// Full-size 7-8K HEVC ran out of 2.5 GB with the output blocked.
+	for _, src := range []SourceVideo{{Codec: "hevc", Width: 8192, Height: 4096, PixFmt: "yuv420p"}, {Codec: "hevc", Width: 7200, Height: 3600, PixFmt: "yuv420p"}} {
+		if p := planGPUDecode(CodecHEVC, gpuDecodeHardware(2581, false), src); p.Decoder != "" {
+			t.Errorf("HEVC from %dx%d decoded on the GPU with 2581 MiB free", src.Width, src.Height)
+		}
 	}
 }

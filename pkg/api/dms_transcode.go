@@ -286,7 +286,14 @@ func prepareTranscode(f models.File, codec string, opts transcode.Options) (tran
 			Stdout: &releaseOnOutput{r: process.Stdout, release: release},
 			Wait: func() error {
 				defer release()
-				return process.Wait()
+				err := process.Wait()
+				if err != nil && p.Decoder != "" && ctx.Err() == nil && !gpuDecodeFailed.Swap(true) {
+					// A GPU decode that fails part-way, for example when another program takes
+					// the GPU memory, is not tried again; the player's next request decodes on
+					// the CPU.
+					log.Warnf("transcode %d %s: decoding with %s stopped, later encodes decode on the CPU: %v", f.ID, codec, p.Decoder, err)
+				}
+				return err
 			},
 		}, nil
 	}, nil
