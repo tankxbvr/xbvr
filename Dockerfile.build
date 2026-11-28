@@ -1,7 +1,8 @@
 # Multi-stage build for the xbvr fork.
-# Stage 1 builds the Vue UI, stage 2 builds ffmpeg with NVENC, stage 3 compiles the
-# Go binary (CGO/sqlite) with the UI embedded, stage 4 is a slim runtime. bookworm is
-# used in the build and runtime stages so the CGO binary's glibc matches.
+# Stage 1 builds the Vue UI, stage 2 compiles the Go binary (CGO/sqlite) with the UI
+# embedded, stage 3 is a slim runtime. trixie is used in the build and runtime stages so
+# the CGO binary's glibc matches. Live transcoding runs the jellyfin-ffmpeg build XBVR
+# downloads into its config folder, so no ffmpeg is built here.
 #
 #   docker build -f Dockerfile.build -t xbvr:recommend .
 
@@ -14,53 +15,19 @@ RUN yarn install --frozen-lockfile --ignore-engines --network-timeout 600000
 COPY . .
 RUN yarn build
 
-### Stage 2 — build ffmpeg with NVENC, VAAPI and Quick Sync, plus the x264 fallback
-# The ffnvcodec headers provide the NVENC API at build time; the NVIDIA driver libraries
-# are injected by the NVIDIA container runtime at run time. libva/libdrm provide VAAPI,
-# and libvpl provides the Quick Sync encoders. All three are compiled into one ffmpeg;
-# which one runs is chosen at startup from the devices and encoders that probe successfully.
-FROM debian:bookworm AS ffmpeg
-ARG FFMPEG_VERSION=7.1
-ARG NV_CODEC_HEADERS_VERSION=n13.0.19.0
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential nasm pkg-config ca-certificates curl xz-utils \
-        libx264-dev libva-dev libdrm-dev libvpl-dev \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/${NV_CODEC_HEADERS_VERSION}.tar.gz" \
-        | tar -xz -C /tmp \
-    && make -C "/tmp/nv-codec-headers-${NV_CODEC_HEADERS_VERSION}" install
-RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
-        | tar -xJ -C /tmp \
-    && cd "/tmp/ffmpeg-${FFMPEG_VERSION}" \
-    && PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure \
-        --prefix=/opt/ffmpeg \
-        --disable-debug --disable-doc --disable-ffplay \
-        --enable-gpl --enable-libx264 \
-        --enable-nvenc --enable-ffnvcodec \
-        --enable-vaapi --enable-libdrm --enable-libvpl \
-        --enable-static --disable-shared \
-        --extra-cflags="-I/usr/local/include" \
-        --extra-ldflags="-L/usr/local/lib" \
-    && make -j"$(nproc)" \
-    && make install \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q h264_nvenc \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q hevc_nvenc \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q av1_nvenc \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q h264_vaapi \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q hevc_vaapi \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q h264_qsv \
-    && /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders | grep -q hevc_qsv
-
-### Stage 3 — build the Go binary with the embedded UI (CGO for go-sqlite3)
-FROM golang:1.26-bookworm AS build
+### Stage 2 — build the Go binary with the embedded UI (CGO for go-sqlite3)
+FROM golang:1.26-trixie AS build
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
-# ONNX Runtime (for visual embeddings) + a small pretrained MobileNetV2 model.
+# ONNX Runtime (for visual embeddings) from its NuGet package, plus a small pretrained
+# MobileNetV2 model.
+ARG ONNXRUNTIME_VERSION=1.26.0
+ARG ONNXRUNTIME_SHA256=50cc3772668f04b8373ad65a36793f94699bc4e818f6e691fc68f1578c38ce42
 RUN mkdir -p /opt/onnx \
-    && curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-1.26.0.tgz -o /tmp/ort.tgz \
-    && tar -C /tmp -xzf /tmp/ort.tgz \
-    && cp -L /tmp/onnxruntime-linux-x64-1.26.0/lib/libonnxruntime.so /opt/onnx/libonnxruntime.so \
+    && curl -fsSL "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ONNXRUNTIME_VERSION}/microsoft.ml.onnxruntime.${ONNXRUNTIME_VERSION}.nupkg" -o /tmp/ort.nupkg \
+    && echo "${ONNXRUNTIME_SHA256}  /tmp/ort.nupkg" | sha256sum -c - \
+    && unzip -q -j /tmp/ort.nupkg runtimes/linux-x64/native/libonnxruntime.so -d /opt/onnx \
     && curl -fsSL https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-7.onnx -o /opt/onnx/mobilenet.onnx
 COPY go.mod go.sum ./
 RUN go mod download
@@ -71,18 +38,20 @@ RUN CGO_ENABLED=1 go build -tags=json1 \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /xbvr .
 
-### Stage 4 — runtime (drop-in for the official image)
-FROM debian:bookworm-slim
-# python3 is used by the deploy checks and helper scripts. The runtime libraries cover
-# NVIDIA's dynamically loaded driver, AMD's Mesa VAAPI driver, and Intel's oneVPL/VAAPI
-# drivers. Hosts still have to pass their GPU device nodes into the container.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 ca-certificates iproute2 libx264-164 \
+### Stage 3 — runtime (drop-in for the official image)
+FROM debian:trixie-slim
+# python3 is used by the deploy checks and helper scripts, and ffmpeg is the one on the PATH
+# for DLNA transcoding. jellyfin-ffmpeg needs the GPU drivers from the system: NVIDIA's are
+# injected by the NVIDIA container runtime; these packages add AMD's Mesa VAAPI driver and
+# Intel's VAAPI drivers and oneVPL runtime. Quick Sync encoding needs Intel's non-free media
+# driver, and jellyfin-ffmpeg needs libva 2.21 or newer to send frames to the GPU, which
+# bookworm does not have. Hosts still have to pass their GPU device nodes into the container.
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3 ca-certificates iproute2 ffmpeg \
         libva2 libva-drm2 libvpl2 libmfx-gen1.2 \
-        mesa-va-drivers intel-media-va-driver i965-va-driver \
+        mesa-va-drivers intel-media-va-driver-non-free i965-va-driver \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
-COPY --from=ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
 COPY --from=build /xbvr /usr/bin/xbvr
 COPY --from=build /opt/onnx/libonnxruntime.so /usr/lib/libonnxruntime.so
 COPY --from=build /opt/onnx/mobilenet.onnx /usr/share/xbvr/mobilenet.onnx
